@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { Client, Databases, Account, ID } from "appwrite";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Client, Databases, Account, ID, Query } from "appwrite";
 import {
   BarChart,
   Bar,
@@ -19,265 +19,710 @@ import jsPDF from "jspdf";
 import * as XLSX from "xlsx";
 import toast, { Toaster } from "react-hot-toast";
 
+type Activity = {
+  $id: string;
+  $createdAt?: string;
+  $updatedAt?: string;
+
+  activityId?: string;
+  appName?: string;
+  application?: string;
+  windowTitle?: string;
+  title?: string;
+
+  startTime?: string;
+  endTime?: string;
+  duration?: number;
+
+  category?: string;
+  classification?: string;
+  confidence?: number;
+  classificationConfidence?: number;
+
+  project?: string;
+  projectName?: string;
+  projectId?: string;
+  projectConfidence?: number;
+
+  classificationReason?: string;
+  projectReason?: string;
+
+  status?: string;
+  source?: string;
+};
+
+const COLORS = [
+  "#3b82f6",
+  "#10b981",
+  "#f59e0b",
+  "#ef4444",
+  "#8b5cf6",
+  "#ec4899",
+];
+
+const PROJECTS = ["Smart Timesheet", "TravelSync", "SkillSync", "Unassigned"];
+
+const CATEGORIES = [
+  "Development",
+  "Design",
+  "Communication",
+  "Documentation",
+  "Research",
+  "Other",
+];
+
 export default function Home() {
-  // ========== STATE ==========
-  const [activities, setActivities] = useState<any[]>([]);
+  const [activities, setActivities] = useState<Activity[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+
   const [user, setUser] = useState<any>(null);
   const [showLogin, setShowLogin] = useState(true);
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
   const [isLogin, setIsLogin] = useState(true);
+  const [authLoading, setAuthLoading] = useState(false);
+
   const [darkMode, setDarkMode] = useState(false);
+
   const [selectedProject, setSelectedProject] = useState("All");
+  const [selectedCategory, setSelectedCategory] = useState("All");
   const [dateRange, setDateRange] = useState("today");
   const [searchTerm, setSearchTerm] = useState("");
+
   const [currentTime, setCurrentTime] = useState(new Date());
-  const [isTracking, setIsTracking] = useState(false);
-  const [trackingStart, setTrackingStart] = useState<Date | null>(null);
-  const [trackedSeconds, setTrackedSeconds] = useState(0);
+
+  const [editingActivity, setEditingActivity] = useState<Activity | null>(null);
+
+  const [editProject, setEditProject] = useState("");
+  const [editCategory, setEditCategory] = useState("");
+  const [savingEdit, setSavingEdit] = useState(false);
+
   const [approvedActivities, setApprovedActivities] = useState<string[]>([]);
 
-  // ========== APPWRITE SETUP ==========
-  const client = new Client()
-    .setEndpoint(process.env.NEXT_PUBLIC_APPWRITE_ENDPOINT!)
-    .setProject(process.env.NEXT_PUBLIC_APPWRITE_PROJECT!);
+  const [showOnlyReview, setShowOnlyReview] = useState(false);
 
-  const databases = new Databases(client);
-  const account = new Account(client);
+  const client = useMemo(() => {
+    return new Client()
+      .setEndpoint(process.env.NEXT_PUBLIC_APPWRITE_ENDPOINT || "")
+      .setProject(process.env.NEXT_PUBLIC_APPWRITE_PROJECT || "");
+  }, []);
 
-  const DATABASE_ID = process.env.NEXT_PUBLIC_APPWRITE_DATABASE_ID!;
-  const COLLECTION_ID = process.env.NEXT_PUBLIC_APPWRITE_COLLECTION_ID!;
+  const databases = useMemo(() => new Databases(client), [client]);
+  const account = useMemo(() => new Account(client), [client]);
 
-  // ========== LIVE CLOCK ==========
+  const DATABASE_ID = process.env.NEXT_PUBLIC_APPWRITE_DATABASE_ID || "";
+
+  const COLLECTION_ID = process.env.NEXT_PUBLIC_APPWRITE_COLLECTION_ID || "";
+
+  /* =========================================================
+     CLOCK
+  ========================================================= */
+
   useEffect(() => {
     const timer = setInterval(() => {
       setCurrentTime(new Date());
     }, 1000);
+
     return () => clearInterval(timer);
   }, []);
 
-  // ========== KEYBOARD SHORTCUTS ==========
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.ctrlKey && e.key === "a") {
-        e.preventDefault();
-        if (!showLogin) addSampleActivity();
-      }
-      if (e.key === "Escape") {
-        // Clear search on Escape
-        setSearchTerm("");
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [showLogin]);
+  /* =========================================================
+     HELPERS
+  ========================================================= */
 
-  // ========== CHECK LOGIN STATUS ==========
+  const getAppName = (activity: Activity) => {
+    return activity.appName || activity.application || "Unknown application";
+  };
+
+  const getWindowTitle = (activity: Activity) => {
+    return activity.windowTitle || activity.title || "";
+  };
+
+  const normalizeCategory = (category?: string) => {
+    if (!category) return "Other";
+
+    const value = category.replace(/[^\w\s-]/g, "").trim();
+
+    if (!value) return "Other";
+
+    return value;
+  };
+
+  const getCategory = (activity: Activity) => {
+    return normalizeCategory(activity.category || activity.classification);
+  };
+
+  const getProject = (activity: Activity) => {
+    return activity.projectName || activity.project || "Unassigned";
+  };
+
+  const getConfidence = (activity: Activity) => {
+    const value =
+      activity.projectConfidence ??
+      activity.classificationConfidence ??
+      activity.confidence;
+
+    if (typeof value !== "number") return null;
+
+    return value <= 1 ? Math.round(value * 100) : Math.round(value);
+  };
+
+  const getDuration = (activity: Activity) => {
+    if (typeof activity.duration === "number") {
+      return Math.max(0, Math.round(activity.duration));
+    }
+
+    if (activity.startTime && activity.endTime) {
+      const start = new Date(activity.startTime).getTime();
+      const end = new Date(activity.endTime).getTime();
+
+      if (Number.isFinite(start) && Number.isFinite(end) && end >= start) {
+        return Math.max(0, Math.round((end - start) / 60000));
+      }
+    }
+
+    return 0;
+  };
+
+  const getActivityDate = (activity: Activity) => {
+    return (
+      activity.startTime || activity.$createdAt || new Date().toISOString()
+    );
+  };
+
+  const isReviewRequired = (activity: Activity) => {
+    const confidence = getConfidence(activity);
+
+    if (activity.status === "needs_review" || activity.status === "review") {
+      return true;
+    }
+
+    if (confidence !== null && confidence < 70) {
+      return true;
+    }
+
+    return (
+      getProject(activity) === "Unassigned" || getCategory(activity) === "Other"
+    );
+  };
+
+  const formatDuration = (minutes: number) => {
+    if (minutes < 60) return `${minutes} min`;
+
+    const hours = Math.floor(minutes / 60);
+    const mins = minutes % 60;
+
+    if (mins === 0) return `${hours}h`;
+
+    return `${hours}h ${mins}m`;
+  };
+
+  const cleanCategory = (category: string) => {
+    return category.replace(/[^\w\s-]/g, "").trim();
+  };
+
+  /* =========================================================
+     LOAD ACTIVITIES
+  ========================================================= */
+
+  const loadActivities = useCallback(
+    async (silent = false) => {
+      if (!DATABASE_ID || !COLLECTION_ID) {
+        setLoading(false);
+        return;
+      }
+
+      try {
+        if (!silent) setLoading(true);
+        else setRefreshing(true);
+
+        const response = await databases.listDocuments(
+          DATABASE_ID,
+          COLLECTION_ID,
+          [Query.orderDesc("$createdAt"), Query.limit(500)],
+        );
+
+        const docs = response.documents as unknown as Activity[];
+
+        setActivities(docs);
+
+        setApprovedActivities(
+          docs
+            .filter((activity) => activity.status === "approved")
+            .map((activity) => activity.$id),
+        );
+      } catch (error: any) {
+        console.error("Error loading activities:", error);
+
+        if (!silent) {
+          toast.error(
+            "Could not load activities. Check Appwrite configuration.",
+          );
+        }
+      } finally {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    },
+    [DATABASE_ID, COLLECTION_ID, databases],
+  );
+
+  /* =========================================================
+     LOGIN CHECK
+  ========================================================= */
+
   useEffect(() => {
     const checkUser = async () => {
       try {
         const currentUser = await account.get();
+
         setUser(currentUser);
         setShowLogin(false);
-        loadActivities();
-      } catch (error) {
+
+        await loadActivities();
+      } catch {
         setShowLogin(true);
         setLoading(false);
       }
     };
+
     checkUser();
-  }, []);
+  }, [account, loadActivities]);
 
-  // ========== LOAD ACTIVITIES ==========
-  const loadActivities = async () => {
-    try {
-      const response = await databases.listDocuments(
-        DATABASE_ID,
-        COLLECTION_ID,
-      );
-      setActivities(response.documents);
-      // Load approved statuses
-      const approved = response.documents
-        .filter((d) => d.status === "approved")
-        .map((d) => d.$id);
-      setApprovedActivities(approved);
-      setLoading(false);
-    } catch (error: any) {
-      console.error("Error loading activities:", error);
-      setLoading(false);
+  /* =========================================================
+     AUTO REFRESH
+  ========================================================= */
+
+  useEffect(() => {
+    if (showLogin) return;
+
+    const interval = setInterval(() => {
+      loadActivities(true);
+    }, 10000);
+
+    return () => clearInterval(interval);
+  }, [showLogin, loadActivities]);
+
+  /* =========================================================
+     KEYBOARD
+  ========================================================= */
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setSearchTerm("");
+      }
+
+      if (event.ctrlKey && event.key.toLowerCase() === "r" && !showLogin) {
+        event.preventDefault();
+        loadActivities(true);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [showLogin, loadActivities]);
+
+  /* =========================================================
+     AUTH
+  ========================================================= */
+
+  const handleLogin = async (event: React.FormEvent) => {
+    event.preventDefault();
+
+    if (!email || !password) {
+      toast.error("Enter your email and password.");
+      return;
     }
-  };
 
-  // ========== LOGIN ==========
-  const handleLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
     try {
+      setAuthLoading(true);
+
       await account.createEmailPasswordSession(email, password);
+
       const currentUser = await account.get();
+
       setUser(currentUser);
       setShowLogin(false);
-      loadActivities();
-      toast.success("✅ Login successful!");
+
+      await loadActivities();
+
+      toast.success("Login successful!");
     } catch (error: any) {
-      toast.error("❌ Login failed: " + error.message);
+      toast.error(error?.message || "Login failed.");
+    } finally {
+      setAuthLoading(false);
     }
   };
 
-  // ========== SIGNUP ==========
-  const handleSignup = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSignup = async (event: React.FormEvent) => {
+    event.preventDefault();
+
+    if (password.length < 8) {
+      toast.error("Password must contain at least 8 characters.");
+      return;
+    }
+
     try {
+      setAuthLoading(true);
+
       await account.create(ID.unique(), email, password, name);
+
       await account.createEmailPasswordSession(email, password);
+
       const currentUser = await account.get();
+
       setUser(currentUser);
       setShowLogin(false);
-      loadActivities();
-      toast.success("✅ Signup successful!");
+
+      await loadActivities();
+
+      toast.success("Account created!");
     } catch (error: any) {
-      toast.error("❌ Signup failed: " + error.message);
+      toast.error(error?.message || "Signup failed.");
+    } finally {
+      setAuthLoading(false);
     }
   };
 
-  // ========== DEMO ACCOUNT ==========
-  const handleDemoLogin = () => {
-    setEmail("demo@demo.com");
-    setPassword("demodemo");
-    toast.success("🔄 Demo credentials loaded! Click Login.");
-  };
-
-  // ========== LOGOUT ==========
   const handleLogout = async () => {
     try {
       await account.deleteSession("current");
+
       setUser(null);
-      setShowLogin(true);
       setActivities([]);
-      toast.success("Logged out");
-    } catch (error) {
-      toast.error("Logout failed");
+      setShowLogin(true);
+
+      toast.success("Logged out.");
+    } catch {
+      toast.error("Logout failed.");
     }
   };
 
-  // ========== ADD SAMPLE DATA ==========
-  const addSampleActivity = async () => {
-    try {
-      const sampleData = [
-        {
-          appName: "AutoCAD",
-          duration: 120,
-          category: "Design",
-          project: "Project Alpha",
-        },
-        {
-          appName: "Figma",
-          duration: 60,
-          category: "Design",
-          project: "Project Beta",
-        },
-        {
-          appName: "Gmail",
-          duration: 30,
-          category: "Communication",
-          project: "Project Alpha",
-        },
-        {
-          appName: "Excel",
-          duration: 45,
-          category: "Documentation",
-          project: "Project Gamma",
-        },
-        {
-          appName: "Chrome",
-          duration: 90,
-          category: "Research",
-          project: "Project Beta",
-        },
-        {
-          appName: "VSCode",
-          duration: 75,
-          category: "Development",
-          project: "Project Alpha",
-        },
-        {
-          appName: "Slack",
-          duration: 25,
-          category: "Communication",
-          project: "Project Gamma",
-        },
-        {
-          appName: "Photoshop",
-          duration: 50,
-          category: "Design",
-          project: "Project Beta",
-        },
-      ];
+  /* =========================================================
+     FILTERING
+  ========================================================= */
 
-      for (const item of sampleData) {
-        await databases.createDocument(
-          DATABASE_ID,
-          COLLECTION_ID,
-          ID.unique(),
-          item,
-        );
+  const filteredActivities = useMemo(() => {
+    const now = new Date();
+
+    const todayStart = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate(),
+    );
+
+    const weekStart = new Date(todayStart);
+    weekStart.setDate(weekStart.getDate() - 7);
+
+    const monthStart = new Date(todayStart);
+    monthStart.setDate(monthStart.getDate() - 30);
+
+    const search = searchTerm.trim().toLowerCase();
+
+    return activities.filter((activity) => {
+      const project = getProject(activity);
+      const category = getCategory(activity);
+      const appName = getAppName(activity);
+      const title = getWindowTitle(activity);
+
+      if (selectedProject !== "All" && project !== selectedProject) {
+        return false;
       }
-      toast.success("✅ Sample activities added!");
-      loadActivities();
-    } catch (error: any) {
-      toast.error("❌ Error adding sample data: " + error.message);
-    }
-  };
 
-  // ========== MANUAL ACTIVITY (from timer) ==========
-  const addManualActivity = async (
-    appName: string,
-    duration: number,
-    category: string,
-    project: string,
-  ) => {
-    try {
-      await databases.createDocument(DATABASE_ID, COLLECTION_ID, ID.unique(), {
-        appName,
-        duration,
-        category,
-        project,
-      });
-      toast.success("✅ Activity tracked: " + appName);
-      loadActivities();
-    } catch (error: any) {
-      toast.error("❌ Error saving activity: " + error.message);
-    }
-  };
+      if (selectedCategory !== "All" && category !== selectedCategory) {
+        return false;
+      }
 
-  // ========== START/STOP TRACKING ==========
-  const toggleTracking = () => {
-    if (!isTracking) {
-      setIsTracking(true);
-      setTrackingStart(new Date());
-      setTrackedSeconds(0);
-      toast.success("▶️ Tracking started!");
-    } else {
-      setIsTracking(false);
-      if (trackingStart) {
-        const duration = Math.round(
-          (new Date().getTime() - trackingStart.getTime()) / 60000,
-        );
-        if (duration > 0) {
-          addManualActivity("Manual Task", duration, "Other", "Project Alpha");
-        } else {
-          toast.error("⏱️ Track at least 1 minute");
+      if (search) {
+        const searchable = `
+          ${appName}
+          ${title}
+          ${project}
+          ${category}
+        `.toLowerCase();
+
+        if (!searchable.includes(search)) {
+          return false;
         }
       }
-      setTrackingStart(null);
+
+      if (showOnlyReview && !isReviewRequired(activity)) {
+        return false;
+      }
+
+      const date = new Date(getActivityDate(activity));
+
+      if (dateRange === "today") {
+        return date >= todayStart;
+      }
+
+      if (dateRange === "week") {
+        return date >= weekStart;
+      }
+
+      if (dateRange === "month") {
+        return date >= monthStart;
+      }
+
+      return true;
+    });
+  }, [
+    activities,
+    selectedProject,
+    selectedCategory,
+    dateRange,
+    searchTerm,
+    showOnlyReview,
+  ]);
+
+  /* =========================================================
+     PROJECTS
+  ========================================================= */
+
+  const projects = useMemo(() => {
+    const values = new Set<string>();
+
+    activities.forEach((activity) => {
+      values.add(getProject(activity));
+    });
+
+    PROJECTS.forEach((project) => values.add(project));
+
+    return Array.from(values);
+  }, [activities]);
+
+  /* =========================================================
+     STATS
+  ========================================================= */
+
+  const totalTime = useMemo(() => {
+    return filteredActivities.reduce(
+      (sum, activity) => sum + getDuration(activity),
+      0,
+    );
+  }, [filteredActivities]);
+
+  const totalActivities = filteredActivities.length;
+
+  const reviewCount = useMemo(() => {
+    return filteredActivities.filter(isReviewRequired).length;
+  }, [filteredActivities]);
+
+  const approvedCount = useMemo(() => {
+    return filteredActivities.filter(
+      (activity) =>
+        activity.status === "approved" ||
+        approvedActivities.includes(activity.$id),
+    ).length;
+  }, [filteredActivities, approvedActivities]);
+
+  const projectCount = useMemo(() => {
+    return new Set(filteredActivities.map(getProject)).size;
+  }, [filteredActivities]);
+
+  const weeklyStats = useMemo(() => {
+    const now = new Date();
+
+    const weekAgo = new Date(now);
+    weekAgo.setDate(weekAgo.getDate() - 7);
+
+    const weekly = activities.filter(
+      (activity) => new Date(getActivityDate(activity)) >= weekAgo,
+    );
+
+    return {
+      total: weekly.reduce((sum, activity) => sum + getDuration(activity), 0),
+      count: weekly.length,
+    };
+  }, [activities]);
+
+  /* =========================================================
+     CHART DATA
+  ========================================================= */
+
+  const categoryData = useMemo(() => {
+    const map: Record<string, number> = {};
+
+    filteredActivities.forEach((activity) => {
+      const category = getCategory(activity);
+
+      map[category] = (map[category] || 0) + getDuration(activity);
+    });
+
+    return Object.entries(map).map(([category, time]) => ({
+      category: cleanCategory(category),
+      full: category,
+      time,
+    }));
+  }, [filteredActivities]);
+
+  const pieData = useMemo(() => {
+    return categoryData.map((item) => ({
+      name: item.full,
+      value: item.time,
+    }));
+  }, [categoryData]);
+
+  const projectData = useMemo(() => {
+    const map: Record<string, number> = {};
+
+    filteredActivities.forEach((activity) => {
+      const project = getProject(activity);
+
+      map[project] = (map[project] || 0) + getDuration(activity);
+    });
+
+    return Object.entries(map)
+      .map(([name, time]) => ({
+        name,
+        time,
+      }))
+      .sort((a, b) => b.time - a.time);
+  }, [filteredActivities]);
+
+  const dailyData = useMemo(() => {
+    const map: Record<string, number> = {};
+
+    filteredActivities.forEach((activity) => {
+      const date = new Date(getActivityDate(activity));
+
+      const label = date.toLocaleDateString(undefined, {
+        month: "short",
+        day: "numeric",
+      });
+
+      map[label] = (map[label] || 0) + getDuration(activity);
+    });
+
+    return Object.entries(map).map(([date, time]) => ({
+      date,
+      time,
+    }));
+  }, [filteredActivities]);
+
+  /* =========================================================
+     APPROVE
+  ========================================================= */
+
+  const approveActivity = async (id: string) => {
+    try {
+      await databases.updateDocument(DATABASE_ID, COLLECTION_ID, id, {
+        status: "approved",
+      });
+
+      setApprovedActivities((previous) =>
+        previous.includes(id) ? previous : [...previous, id],
+      );
+
+      setActivities((previous) =>
+        previous.map((activity) =>
+          activity.$id === id
+            ? {
+                ...activity,
+                status: "approved",
+              }
+            : activity,
+        ),
+      );
+
+      toast.success("Activity approved.");
+    } catch (error: any) {
+      toast.error(error?.message || "Could not approve activity.");
     }
   };
 
-  // ========== CLEAR ALL DATA ==========
-  const clearActivities = async () => {
-    if (!confirm("Delete all activities?")) return;
+  /* =========================================================
+     EDIT ACTIVITY
+  ========================================================= */
+
+  const openEditor = (activity: Activity) => {
+    setEditingActivity(activity);
+    setEditProject(getProject(activity));
+    setEditCategory(getCategory(activity));
+  };
+
+  const closeEditor = () => {
+    if (savingEdit) return;
+
+    setEditingActivity(null);
+    setEditProject("");
+    setEditCategory("");
+  };
+
+  const saveActivityCorrection = async () => {
+    if (!editingActivity) return;
+
+    if (!editProject || !editCategory) {
+      toast.error("Select both project and category.");
+      return;
+    }
+
     try {
+      setSavingEdit(true);
+
+      await databases.updateDocument(
+        DATABASE_ID,
+        COLLECTION_ID,
+        editingActivity.$id,
+        {
+          project: editProject,
+          projectName: editProject,
+          category: editCategory,
+          status: "corrected",
+        },
+      );
+
+      setActivities((previous) =>
+        previous.map((activity) =>
+          activity.$id === editingActivity.$id
+            ? {
+                ...activity,
+                project: editProject,
+                projectName: editProject,
+                category: editCategory,
+                status: "corrected",
+              }
+            : activity,
+        ),
+      );
+
+      toast.success("Correction saved.");
+
+      closeEditor();
+    } catch (error: any) {
+      toast.error(
+        error?.message ||
+          "Could not save correction. Check your Appwrite attributes.",
+      );
+    } finally {
+      setSavingEdit(false);
+    }
+  };
+
+  /* =========================================================
+     CLEAR DATA
+  ========================================================= */
+
+  const clearActivities = async () => {
+    if (activities.length === 0) {
+      toast("There are no activities to clear.");
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Delete ${activities.length} activities? This cannot be undone.`,
+    );
+
+    if (!confirmed) return;
+
+    try {
+      setLoading(true);
+
       for (const activity of activities) {
         await databases.deleteDocument(
           DATABASE_ID,
@@ -285,516 +730,435 @@ export default function Home() {
           activity.$id,
         );
       }
-      toast.success("✅ All activities cleared!");
-      loadActivities();
+
+      setActivities([]);
+      setApprovedActivities([]);
+
+      toast.success("All activities cleared.");
     } catch (error: any) {
-      toast.error("❌ Error clearing data: " + error.message);
+      toast.error(error?.message || "Could not clear activities.");
+    } finally {
+      setLoading(false);
     }
   };
 
-  // ========== APPROVE ACTIVITY ==========
-  const approveActivity = async (id: string) => {
-    try {
-      await databases.updateDocument(DATABASE_ID, COLLECTION_ID, id, {
-        status: "approved",
-      });
-      setApprovedActivities([...approvedActivities, id]);
-      toast.success("✅ Activity approved!");
-      loadActivities();
-    } catch (error: any) {
-      toast.error("❌ Error approving: " + error.message);
-    }
-  };
+  /* =========================================================
+     CSV EXPORT
+  ========================================================= */
 
-  // ========== AI CLASSIFICATION ==========
-  const classifyActivity = (appName: string) => {
-    const appNameLower = appName?.toLowerCase() || "";
-
-    if (
-      [
-        "autocad",
-        "figma",
-        "sketchup",
-        "revit",
-        "blender",
-        "photoshop",
-        "illustrator",
-        "3ds max",
-        "lumion",
-      ].some((kw) => appNameLower.includes(kw))
-    ) {
-      return "🎨 Design";
-    }
-    if (
-      [
-        "vscode",
-        "vs code",
-        "github",
-        "git",
-        "terminal",
-        "cursor",
-        "intellij",
-        "pycharm",
-        "webstorm",
-      ].some((kw) => appNameLower.includes(kw))
-    ) {
-      return "💻 Development";
-    }
-    if (
-      [
-        "gmail",
-        "outlook",
-        "slack",
-        "whatsapp",
-        "teams",
-        "zoom",
-        "meet",
-        "discord",
-        "telegram",
-      ].some((kw) => appNameLower.includes(kw))
-    ) {
-      return "📧 Communication";
-    }
-    if (
-      [
-        "word",
-        "excel",
-        "powerpoint",
-        "docs",
-        "sheets",
-        "slides",
-        "notion",
-        "evernote",
-        "one note",
-      ].some((kw) => appNameLower.includes(kw))
-    ) {
-      return "📊 Documentation";
-    }
-    if (
-      [
-        "chrome",
-        "firefox",
-        "safari",
-        "edge",
-        "browser",
-        "research",
-        "stack overflow",
-        "google",
-      ].some((kw) => appNameLower.includes(kw))
-    ) {
-      return "🔍 Research";
-    }
-    return "📌 Other";
-  };
-
-  // ========== FILTER ACTIVITIES ==========
-  const getFilteredActivities = () => {
-    let filtered = activities;
-
-    if (selectedProject !== "All") {
-      filtered = filtered.filter((a) => a.project === selectedProject);
+  const exportCSV = () => {
+    if (filteredActivities.length === 0) {
+      toast.error("No activities to export.");
+      return;
     }
 
-    if (searchTerm) {
-      filtered = filtered.filter((a) =>
-        a.appName?.toLowerCase().includes(searchTerm.toLowerCase()),
-      );
-    }
+    const headers = [
+      "Sl No",
+      "Application",
+      "Window Title",
+      "Duration (mins)",
+      "Category",
+      "Project",
+      "Confidence",
+      "Status",
+      "Date",
+    ];
 
-    const now = new Date();
-    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    if (dateRange === "today") {
-      const todayStr = today.toISOString().split("T")[0];
-      filtered = filtered.filter(
-        (a) => a.$createdAt?.split("T")[0] === todayStr,
-      );
-    } else if (dateRange === "week") {
-      const weekAgo = new Date(today);
-      weekAgo.setDate(weekAgo.getDate() - 7);
-      filtered = filtered.filter((a) => new Date(a.$createdAt) >= weekAgo);
-    } else if (dateRange === "month") {
-      const monthAgo = new Date(today);
-      monthAgo.setMonth(monthAgo.getMonth() - 1);
-      filtered = filtered.filter((a) => new Date(a.$createdAt) >= monthAgo);
-    }
+    const escapeCSV = (value: any) => {
+      const text = String(value ?? "");
 
-    return filtered;
-  };
-
-  const filteredActivities = getFilteredActivities();
-
-  // ========== CALCULATIONS ==========
-  const totalTime = filteredActivities.reduce(
-    (sum, act) => sum + (act.duration || 0),
-    0,
-  );
-  const projects = [
-    ...new Set(activities.map((a) => a.project).filter(Boolean)),
-  ];
-
-  // ========== WEEKLY STATS ==========
-  const getWeeklyStats = () => {
-    const weekAgo = new Date();
-    weekAgo.setDate(weekAgo.getDate() - 7);
-    const weekly = activities.filter((a) => new Date(a.$createdAt) >= weekAgo);
-    return {
-      total: weekly.reduce((sum, a) => sum + (a.duration || 0), 0),
-      count: weekly.length,
-    };
-  };
-  const weeklyStats = getWeeklyStats();
-
-  // ========== CHART DATA ==========
-  const getChartData = () => {
-    const categoryCount: Record<string, number> = {};
-    filteredActivities.forEach((act) => {
-      const cat = classifyActivity(act.appName);
-      categoryCount[cat] = (categoryCount[cat] || 0) + (act.duration || 0);
-    });
-    return Object.keys(categoryCount).map((key) => ({
-      category: key.replace(/[^\w\s]/g, "").trim(),
-      time: categoryCount[key],
-      full: key,
-    }));
-  };
-
-  const getPieData = () => {
-    const categoryCount: Record<string, number> = {};
-    filteredActivities.forEach((act) => {
-      const cat = classifyActivity(act.appName);
-      categoryCount[cat] = (categoryCount[cat] || 0) + (act.duration || 0);
-    });
-    return Object.keys(categoryCount).map((key) => ({
-      name: key,
-      value: categoryCount[key],
-    }));
-  };
-
-  const getProjectData = () => {
-    const projectCount: Record<string, number> = {};
-    filteredActivities.forEach((act) => {
-      if (act.project) {
-        projectCount[act.project] =
-          (projectCount[act.project] || 0) + (act.duration || 0);
+      if (text.includes(",") || text.includes('"') || text.includes("\n")) {
+        return `"${text.replace(/"/g, '""')}"`;
       }
+
+      return text;
+    };
+
+    const rows = filteredActivities.map((activity, index) => [
+      index + 1,
+      getAppName(activity),
+      getWindowTitle(activity),
+      getDuration(activity),
+      getCategory(activity),
+      getProject(activity),
+      getConfidence(activity) === null ? "" : `${getConfidence(activity)}%`,
+      activity.status || "pending",
+      new Date(getActivityDate(activity)).toLocaleString(),
+    ]);
+
+    let csv = "\uFEFF";
+
+    csv += headers.map(escapeCSV).join(",") + "\n";
+
+    rows.forEach((row) => {
+      csv += row.map(escapeCSV).join(",") + "\n";
     });
-    return Object.keys(projectCount).map((key) => ({
-      name: key,
-      time: projectCount[key],
-    }));
+
+    csv += "\nSUMMARY\n";
+    csv += `Total Time,${totalTime} mins\n`;
+    csv += `Total Activities,${totalActivities}\n`;
+    csv += `Projects,${projectCount}\n`;
+    csv += `Needs Review,${reviewCount}\n`;
+    csv += `Approved,${approvedCount}\n`;
+
+    csv += "\nCATEGORY BREAKDOWN\n";
+    csv += "Category,Minutes,Percentage\n";
+
+    categoryData.forEach((item) => {
+      const percentage =
+        totalTime > 0 ? Math.round((item.time / totalTime) * 100) : 0;
+
+      csv += `${escapeCSV(item.full)},${item.time},${percentage}%\n`;
+    });
+
+    csv += "\nPROJECT BREAKDOWN\n";
+    csv += "Project,Minutes,Percentage\n";
+
+    projectData.forEach((item) => {
+      const percentage =
+        totalTime > 0 ? Math.round((item.time / totalTime) * 100) : 0;
+
+      csv += `${escapeCSV(item.name)},${item.time},${percentage}%\n`;
+    });
+
+    const blob = new Blob([csv], {
+      type: "text/csv;charset=utf-8;",
+    });
+
+    const url = window.URL.createObjectURL(blob);
+
+    const link = document.createElement("a");
+
+    link.href = url;
+    link.download = `smart-timesheet-${
+      new Date().toISOString().split("T")[0]
+    }.csv`;
+
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+
+    window.URL.revokeObjectURL(url);
+
+    toast.success("CSV exported.");
   };
 
-  const getDailyData = () => {
-    const dailyMap: Record<string, number> = {};
-    filteredActivities.forEach((act) => {
-      const date = new Date(act.$createdAt).toLocaleDateString();
-      dailyMap[date] = (dailyMap[date] || 0) + (act.duration || 0);
-    });
-    return Object.keys(dailyMap).map((date) => ({
-      date,
-      time: dailyMap[date],
+  /* =========================================================
+     EXCEL EXPORT
+  ========================================================= */
+
+  const exportExcel = () => {
+    if (filteredActivities.length === 0) {
+      toast.error("No activities to export.");
+      return;
+    }
+
+    const activityRows = filteredActivities.map((activity, index) => ({
+      "Sl No": index + 1,
+      Application: getAppName(activity),
+      "Window Title": getWindowTitle(activity),
+      "Duration (mins)": getDuration(activity),
+      Category: getCategory(activity),
+      Project: getProject(activity),
+      Confidence:
+        getConfidence(activity) === null ? "" : `${getConfidence(activity)}%`,
+      Status: activity.status || "pending",
+      Date: new Date(getActivityDate(activity)).toLocaleString(),
     }));
+
+    const workbook = XLSX.utils.book_new();
+
+    const activitySheet = XLSX.utils.json_to_sheet(activityRows);
+
+    XLSX.utils.book_append_sheet(workbook, activitySheet, "Activities");
+
+    const summaryRows: any[][] = [
+      ["SMART TIMESHEET REPORT"],
+      [],
+      ["Metric", "Value"],
+      ["Total Time", formatDuration(totalTime)],
+      ["Total Activities", totalActivities],
+      ["Projects", projectCount],
+      ["Needs Review", reviewCount],
+      ["Approved", approvedCount],
+      [],
+      ["CATEGORY BREAKDOWN"],
+      ["Category", "Minutes", "Percentage"],
+    ];
+
+    categoryData.forEach((item) => {
+      const percentage =
+        totalTime > 0 ? Math.round((item.time / totalTime) * 100) : 0;
+
+      summaryRows.push([item.full, item.time, `${percentage}%`]);
+    });
+
+    summaryRows.push(
+      [],
+      ["PROJECT BREAKDOWN"],
+      ["Project", "Minutes", "Percentage"],
+    );
+
+    projectData.forEach((item) => {
+      const percentage =
+        totalTime > 0 ? Math.round((item.time / totalTime) * 100) : 0;
+
+      summaryRows.push([item.name, item.time, `${percentage}%`]);
+    });
+
+    const summarySheet = XLSX.utils.aoa_to_sheet(summaryRows);
+
+    XLSX.utils.book_append_sheet(workbook, summarySheet, "Summary");
+
+    XLSX.writeFile(
+      workbook,
+      `smart-timesheet-${new Date().toISOString().split("T")[0]}.xlsx`,
+    );
+
+    toast.success("Excel exported.");
   };
 
-  const chartData = getChartData();
-  const pieData = getPieData();
-  const projectData = getProjectData();
-  const dailyData = getDailyData();
+  /* =========================================================
+     PDF EXPORT
+  ========================================================= */
 
-  const COLORS = [
-    "#3b82f6",
-    "#10b981",
-    "#f59e0b",
-    "#ef4444",
-    "#8b5cf6",
-    "#ec4899",
-  ];
-
-  // ========== EXPORT PDF ==========
   const exportPDF = () => {
+    if (filteredActivities.length === 0) {
+      toast.error("No activities to export.");
+      return;
+    }
+
     const doc = new jsPDF();
 
-    doc.setFontSize(18);
-    doc.setTextColor(40, 40, 40);
-    doc.text("Smart Timesheet Report", 20, 25);
+    doc.setFontSize(20);
+    doc.setTextColor(25, 25, 25);
 
-    doc.setFontSize(10);
+    doc.text("Smart Timesheet Report", 20, 22);
+
+    doc.setFontSize(9);
     doc.setTextColor(100, 100, 100);
-    doc.text(`Generated: ${new Date().toLocaleString()}`, 20, 35);
-    doc.text(`User: ${user?.name || user?.email || "User"}`, 20, 42);
+
+    doc.text(`Generated: ${new Date().toLocaleString()}`, 20, 30);
+
+    doc.text(`User: ${user?.name || user?.email || "User"}`, 20, 36);
 
     doc.setFontSize(12);
     doc.setTextColor(40, 40, 40);
-    doc.text("Summary", 20, 55);
+
+    doc.text("Summary", 20, 50);
 
     doc.setFontSize(10);
-    doc.setTextColor(80, 80, 80);
-    doc.text(
-      `Total Time: ${totalTime} mins (${Math.round(totalTime / 60)} hours)`,
-      20,
-      63,
-    );
-    doc.text(`Total Activities: ${filteredActivities.length}`, 20, 70);
-    doc.text(`Total Projects: ${projects.length}`, 20, 77);
+
+    doc.text(`Total time: ${formatDuration(totalTime)}`, 20, 59);
+
+    doc.text(`Activities: ${totalActivities}`, 20, 66);
+
+    doc.text(`Projects: ${projectCount}`, 20, 73);
+
+    doc.text(`Needs review: ${reviewCount}`, 20, 80);
+
+    doc.text(`Approved: ${approvedCount}`, 20, 87);
 
     doc.setFontSize(12);
-    doc.setTextColor(40, 40, 40);
-    doc.text("Activity Details", 20, 90);
 
-    doc.setFontSize(8);
-    doc.setTextColor(60, 60, 60);
+    doc.text("Activity Details", 20, 102);
 
-    let y = 98;
-    filteredActivities.forEach((act, i) => {
+    let y = 112;
+
+    filteredActivities.forEach((activity, index) => {
       if (y > 270) {
         doc.addPage();
         y = 20;
       }
-      const cat = classifyActivity(act.appName);
-      const cleanCategory = cat.replace(/[^\w\s]/g, "").trim();
-      doc.setDrawColor(230, 230, 230);
-      doc.line(20, y - 2, 190, y - 2);
-      doc.text(`${i + 1}. ${act.appName} - ${act.duration} mins`, 20, y);
-      doc.setTextColor(120, 120, 120);
-      doc.text(
-        `${cleanCategory}${act.project ? " | " + act.project : ""}`,
-        20,
-        y + 4,
-      );
-      doc.setTextColor(60, 60, 60);
-      y += 10;
+
+      const app = getAppName(activity);
+      const category = cleanCategory(getCategory(activity));
+      const project = getProject(activity);
+      const duration = getDuration(activity);
+
+      doc.setFontSize(9);
+      doc.setTextColor(40, 40, 40);
+
+      doc.text(`${index + 1}. ${app} — ${duration} mins`, 20, y);
+
+      doc.setFontSize(8);
+      doc.setTextColor(100, 100, 100);
+
+      doc.text(`${category} | ${project}`, 20, y + 5);
+
+      y += 12;
     });
 
     doc.addPage();
+
     doc.setFontSize(16);
     doc.setTextColor(40, 40, 40);
+
     doc.text("Category Summary", 20, 25);
 
-    const summaryData = getChartData();
-    let y2 = 35;
-    if (totalTime > 0) {
-      summaryData.forEach((item) => {
-        const cleanName = item.full
-          ? item.full.replace(/[^\w\s]/g, "").trim()
-          : item.category;
-        const percentage = Math.round((item.time / totalTime) * 100);
-        doc.setFontSize(10);
-        doc.setTextColor(60, 60, 60);
-        doc.text(
-          `${cleanName || "Other"}: ${item.time} mins (${percentage}%)`,
-          20,
-          y2,
-        );
-        const barWidth = (percentage / 100) * 150;
-        doc.setDrawColor(200, 200, 200);
-        doc.rect(20, y2 + 2, 150, 3);
-        doc.setFillColor(59, 130, 246);
-        doc.rect(20, y2 + 2, barWidth, 3, "F");
-        y2 += 12;
-      });
-    } else {
-      doc.text("No data available", 20, 35);
-    }
+    let categoryY = 38;
 
-    doc.setFontSize(8);
-    doc.setTextColor(150, 150, 150);
-    const pageCount = doc.internal.pages.length - 1;
-    for (let i = 1; i <= pageCount; i++) {
-      doc.setPage(i);
-      doc.text(`Page ${i} of ${pageCount}`, 180, 285);
-      doc.text("Generated by Smart Timesheet", 20, 285);
-    }
+    categoryData.forEach((item) => {
+      const percentage =
+        totalTime > 0 ? Math.round((item.time / totalTime) * 100) : 0;
 
-    doc.save("timesheet_report.pdf");
-    toast.success("✅ PDF downloaded!");
-  };
+      doc.setFontSize(10);
 
-  // ========== EXPORT CSV ==========
-  const exportCSV = () => {
-    const cleanCategory = (cat: string) => cat.replace(/[^\w\s]/g, "").trim();
+      doc.text(
+        `${cleanCategory(item.full)}: ${item.time} mins (${percentage}%)`,
+        20,
+        categoryY,
+      );
 
-    const headers = [
-      "Sl No",
-      "App Name",
-      "Duration (mins)",
-      "Category",
-      "Project",
-      "Date",
-    ];
-    const rows = filteredActivities.map((act, index) => [
-      index + 1,
-      act.appName || "",
-      act.duration || 0,
-      cleanCategory(classifyActivity(act.appName)),
-      act.project || "",
-      new Date(act.$createdAt).toLocaleDateString(),
-    ]);
-
-    let csv = "\uFEFF";
-    csv += headers.join(",") + "\n";
-    rows.forEach((row) => {
-      const cleanRow = row.map((field) => {
-        if (typeof field === "string" && field.includes(","))
-          return `"${field}"`;
-        return field;
-      });
-      csv += cleanRow.join(",") + "\n";
+      categoryY += 10;
     });
 
-    csv += "\nSUMMARY\n";
-    csv += `Total Time,${totalTime} mins (${Math.round(totalTime / 60)} hours)\n`;
-    csv += `Total Activities,${filteredActivities.length}\n`;
-    csv += `Total Projects,${projects.length}\n`;
+    doc.setFontSize(16);
 
-    csv += "\nCategory Breakdown\n";
-    csv += "Category,Time (mins),Percentage\n";
-    const summaryData = getChartData();
-    if (totalTime > 0) {
-      summaryData.forEach((item) => {
-        const cleanName = item.full
-          ? item.full.replace(/[^\w\s]/g, "").trim()
-          : item.category;
-        const percentage = Math.round((item.time / totalTime) * 100);
-        csv += `${cleanName || "Other"},${item.time},${percentage}%\n`;
-      });
+    doc.text("Project Summary", 20, categoryY + 15);
+
+    categoryY += 28;
+
+    projectData.forEach((item) => {
+      const percentage =
+        totalTime > 0 ? Math.round((item.time / totalTime) * 100) : 0;
+
+      doc.setFontSize(10);
+
+      doc.text(
+        `${item.name}: ${item.time} mins (${percentage}%)`,
+        20,
+        categoryY,
+      );
+
+      categoryY += 10;
+    });
+
+    const pageCount = doc.internal.pages.length - 1;
+
+    for (let page = 1; page <= pageCount; page++) {
+      doc.setPage(page);
+
+      doc.setFontSize(8);
+      doc.setTextColor(150, 150, 150);
+
+      doc.text(`Page ${page} of ${pageCount}`, 170, 285);
+
+      doc.text("Smart Timesheet", 20, 285);
     }
 
-    csv += "\nProject Breakdown\n";
-    csv += "Project,Time (mins),Percentage\n";
-    if (totalTime > 0) {
-      projectData.forEach((project) => {
-        const percentage = Math.round((project.time / totalTime) * 100);
-        csv += `${project.name},${project.time},${percentage}%\n`;
-      });
-    }
+    doc.save("smart-timesheet-report.pdf");
 
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `timesheet_${new Date().toISOString().split("T")[0]}.csv`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    window.URL.revokeObjectURL(url);
-    toast.success("✅ CSV downloaded!");
+    toast.success("PDF exported.");
   };
 
-  // ========== EXPORT EXCEL ==========
-  const exportExcel = () => {
-    const data = filteredActivities.map((act) => ({
-      "Sl No": filteredActivities.indexOf(act) + 1,
-      "App Name": act.appName || "",
-      "Duration (mins)": act.duration || 0,
-      Category: classifyActivity(act.appName)
-        .replace(/[^\w\s]/g, "")
-        .trim(),
-      Project: act.project || "",
-      Date: new Date(act.$createdAt).toLocaleDateString(),
-    }));
+  /* =========================================================
+     LOGIN SCREEN
+  ========================================================= */
 
-    const ws = XLSX.utils.json_to_sheet(data);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Timesheet");
-
-    // Add summary sheet
-    const summaryData = [
-      ["SUMMARY"],
-      ["Total Time", `${totalTime} mins (${Math.round(totalTime / 60)} hours)`],
-      ["Total Activities", filteredActivities.length],
-      ["Total Projects", projects.length],
-      [],
-      ["Category Breakdown"],
-      ["Category", "Time (mins)", "Percentage"],
-    ];
-    const chartDataForSummary = getChartData();
-    if (totalTime > 0) {
-      chartDataForSummary.forEach((item) => {
-        const cleanName = item.full
-          ? item.full.replace(/[^\w\s]/g, "").trim()
-          : item.category;
-        const percentage = Math.round((item.time / totalTime) * 100);
-        summaryData.push([cleanName || "Other", item.time, `${percentage}%`]);
-      });
-    }
-    const wsSummary = XLSX.utils.aoa_to_sheet(summaryData);
-    XLSX.utils.book_append_sheet(wb, wsSummary, "Summary");
-
-    XLSX.writeFile(
-      wb,
-      `timesheet_${new Date().toISOString().split("T")[0]}.xlsx`,
-    );
-    toast.success("✅ Excel downloaded!");
-  };
-
-  // ========== LOGIN SCREEN ==========
   if (showLogin) {
     return (
       <div
-        className={`min-h-screen flex items-center justify-center ${darkMode ? "bg-gray-900" : "bg-gray-100"}`}
+        className={`min-h-screen flex items-center justify-center p-6 ${
+          darkMode ? "bg-gray-950 text-white" : "bg-gray-100 text-gray-900"
+        }`}
       >
         <Toaster position="top-right" />
+
         <div
-          className={`p-8 rounded-lg shadow-lg w-96 ${darkMode ? "bg-gray-800 text-white" : "bg-white"}`}
+          className={`w-full max-w-md rounded-2xl shadow-xl p-8 ${
+            darkMode ? "bg-gray-900 border border-gray-800" : "bg-white"
+          }`}
         >
-          <h1 className="text-2xl font-bold text-center mb-6">
-            {isLogin ? "🔐 Login" : "📝 Create Account"}
-          </h1>
-          <form onSubmit={isLogin ? handleLogin : handleSignup}>
+          <div className="text-center mb-8">
+            <div className="text-5xl mb-3">⏱️</div>
+
+            <h1 className="text-3xl font-bold">Smart Timesheet</h1>
+
+            <p
+              className={`mt-2 text-sm ${
+                darkMode ? "text-gray-400" : "text-gray-500"
+              }`}
+            >
+              Automatic work intelligence
+            </p>
+          </div>
+
+          <form
+            onSubmit={isLogin ? handleLogin : handleSignup}
+            className="space-y-4"
+          >
             {!isLogin && (
               <input
                 type="text"
-                placeholder="Full Name"
-                className={`w-full p-3 border rounded mb-3 ${darkMode ? "bg-gray-700 border-gray-600 text-white" : ""}`}
+                placeholder="Full name"
                 value={name}
-                onChange={(e) => setName(e.target.value)}
+                onChange={(event) => setName(event.target.value)}
                 required
+                className={`w-full rounded-xl border p-3 outline-none focus:ring-2 focus:ring-blue-500 ${
+                  darkMode
+                    ? "bg-gray-800 border-gray-700 text-white"
+                    : "bg-white border-gray-300"
+                }`}
               />
             )}
+
             <input
               type="email"
               placeholder="Email"
-              className={`w-full p-3 border rounded mb-3 ${darkMode ? "bg-gray-700 border-gray-600 text-white" : ""}`}
               value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              onChange={(event) => setEmail(event.target.value)}
               required
+              className={`w-full rounded-xl border p-3 outline-none focus:ring-2 focus:ring-blue-500 ${
+                darkMode
+                  ? "bg-gray-800 border-gray-700 text-white"
+                  : "bg-white border-gray-300"
+              }`}
             />
+
             <input
               type="password"
-              placeholder="Password (min 8 characters)"
-              className={`w-full p-3 border rounded mb-4 ${darkMode ? "bg-gray-700 border-gray-600 text-white" : ""}`}
+              placeholder="Password"
               value={password}
-              onChange={(e) => setPassword(e.target.value)}
+              onChange={(event) => setPassword(event.target.value)}
               required
+              className={`w-full rounded-xl border p-3 outline-none focus:ring-2 focus:ring-blue-500 ${
+                darkMode
+                  ? "bg-gray-800 border-gray-700 text-white"
+                  : "bg-white border-gray-300"
+              }`}
             />
+
             <button
               type="submit"
-              className="w-full bg-blue-500 text-white py-3 rounded-lg hover:bg-blue-600 font-semibold"
+              disabled={authLoading}
+              className="w-full rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-semibold py-3 transition"
             >
-              {isLogin ? "Login" : "Sign Up"}
+              {authLoading
+                ? "Please wait..."
+                : isLogin
+                  ? "Login"
+                  : "Create Account"}
             </button>
           </form>
+
           <button
-            onClick={handleDemoLogin}
-            className="w-full mt-2 text-sm text-blue-500 hover:underline"
+            onClick={() => setIsLogin(!isLogin)}
+            className="w-full mt-5 text-sm text-blue-500 hover:underline"
           >
-            🚀 Try Demo Account
+            {isLogin
+              ? "Create a new account"
+              : "Already have an account? Login"}
           </button>
-          <p className="text-center mt-4 text-sm">
-            {isLogin ? "Don't have an account?" : "Already have an account?"}
-            <button
-              className="text-blue-500 ml-1 hover:underline"
-              onClick={() => setIsLogin(!isLogin)}
-            >
-              {isLogin ? "Sign Up" : "Login"}
-            </button>
-          </p>
-          <div className="flex justify-end mt-4">
+
+          <div className="flex justify-center mt-6">
             <button
               onClick={() => setDarkMode(!darkMode)}
-              className="text-sm px-3 py-1 rounded bg-gray-200 dark:bg-gray-700"
+              className={`px-4 py-2 rounded-lg text-sm ${
+                darkMode ? "bg-gray-800" : "bg-gray-100"
+              }`}
             >
-              {darkMode ? "☀️ Light" : "🌙 Dark"}
+              {darkMode ? "☀️ Light mode" : "🌙 Dark mode"}
             </button>
           </div>
         </div>
@@ -802,379 +1166,819 @@ export default function Home() {
     );
   }
 
-  // ========== MAIN DASHBOARD ==========
+  /* =========================================================
+     DASHBOARD
+  ========================================================= */
+
   return (
     <div
-      className={`min-h-screen ${darkMode ? "bg-gray-900 text-white" : "bg-gray-50 text-gray-900"}`}
+      className={`min-h-screen ${
+        darkMode ? "bg-gray-950 text-white" : "bg-gray-50 text-gray-900"
+      }`}
     >
       <Toaster position="top-right" />
-      <div className="max-w-7xl mx-auto p-6">
-        {/* ===== HEADER ===== */}
-        <div className="flex justify-between items-center mb-6 flex-wrap gap-2">
+
+      <div className="max-w-7xl mx-auto p-4 md:p-6">
+        {/* HEADER */}
+
+        <header className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 mb-6">
           <div>
-            <h1 className="text-3xl font-bold">⏱️ Smart Timesheet</h1>
-            <p className={darkMode ? "text-gray-400" : "text-gray-600"}>
-              Welcome back, {user?.name || user?.email || "User"}!
-              <span className="ml-2 text-sm opacity-60">
-                🕐 {currentTime.toLocaleTimeString()}
-              </span>
-              <span className="ml-2 text-xs opacity-50">
-                (Ctrl+A to add sample data)
-              </span>
-            </p>
+            <div className="flex items-center gap-3">
+              <div className="text-3xl">⏱️</div>
+
+              <div>
+                <h1 className="text-3xl font-bold">Smart Timesheet</h1>
+
+                <p
+                  className={`text-sm ${
+                    darkMode ? "text-gray-400" : "text-gray-500"
+                  }`}
+                >
+                  Work Intelligence Dashboard
+                </p>
+              </div>
+            </div>
+
+            <div
+              className={`mt-2 text-sm ${
+                darkMode ? "text-gray-400" : "text-gray-500"
+              }`}
+            >
+              {user?.name || user?.email || "User"} •{" "}
+              {currentTime.toLocaleTimeString()}
+            </div>
           </div>
-          <div className="flex gap-2 flex-wrap">
+
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={() => loadActivities(true)}
+              className={`px-4 py-2 rounded-xl text-sm font-medium ${
+                darkMode
+                  ? "bg-gray-800 hover:bg-gray-700"
+                  : "bg-white hover:bg-gray-100 border"
+              }`}
+            >
+              {refreshing ? "↻ Refreshing..." : "↻ Refresh"}
+            </button>
+
             <button
               onClick={() => setDarkMode(!darkMode)}
-              className={`px-3 py-2 rounded-lg text-sm ${darkMode ? "bg-gray-700 text-white" : "bg-gray-200"}`}
+              className={`px-4 py-2 rounded-xl text-sm ${
+                darkMode ? "bg-gray-800" : "bg-white border"
+              }`}
             >
-              {darkMode ? "☀️ Light" : "🌙 Dark"}
+              {darkMode ? "☀️" : "🌙"}
             </button>
-            <button
-              onClick={toggleTracking}
-              className={`px-4 py-2 rounded-lg text-sm ${isTracking ? "bg-red-500 text-white animate-pulse" : "bg-blue-500 text-white"}`}
-            >
-              {isTracking ? "⏹️ Stop Tracking" : "▶️ Start Tracking"}
-            </button>
-            <button
-              onClick={addSampleActivity}
-              className="bg-green-500 text-white px-4 py-2 rounded-lg hover:bg-green-600 text-sm"
-            >
-              + Add Sample
-            </button>
-            <button
-              onClick={exportPDF}
-              className="bg-purple-500 text-white px-4 py-2 rounded-lg hover:bg-purple-600 text-sm"
-            >
-              📄 PDF
-            </button>
+
             <button
               onClick={exportCSV}
-              className="bg-indigo-500 text-white px-4 py-2 rounded-lg hover:bg-indigo-600 text-sm"
+              className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-sm"
             >
-              📊 CSV
+              CSV
             </button>
+
             <button
               onClick={exportExcel}
-              className="bg-emerald-500 text-white px-4 py-2 rounded-lg hover:bg-emerald-600 text-sm"
+              className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-sm"
             >
-              📈 Excel
+              Excel
             </button>
+
             <button
-              onClick={clearActivities}
-              className="bg-red-500 text-white px-4 py-2 rounded-lg hover:bg-red-600 text-sm"
+              onClick={exportPDF}
+              className="px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-700 text-white text-sm"
             >
-              Clear All
+              PDF
             </button>
+
             <button
               onClick={handleLogout}
-              className="bg-gray-500 text-white px-4 py-2 rounded-lg hover:bg-gray-600 text-sm"
+              className="px-4 py-2 rounded-xl bg-gray-600 hover:bg-gray-700 text-white text-sm"
             >
               Logout
             </button>
           </div>
+        </header>
+
+        {/* LIVE STATUS */}
+
+        <div
+          className={`rounded-2xl p-4 mb-6 border ${
+            darkMode
+              ? "bg-gray-900 border-gray-800"
+              : "bg-white border-gray-200"
+          }`}
+        >
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <span className="relative flex h-3 w-3">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
+                <span className="relative inline-flex rounded-full h-3 w-3 bg-green-500" />
+              </span>
+
+              <div>
+                <p className="font-semibold">Desktop tracking connected</p>
+
+                <p
+                  className={`text-xs ${
+                    darkMode ? "text-gray-400" : "text-gray-500"
+                  }`}
+                >
+                  Activities refresh automatically every 10 seconds.
+                </p>
+              </div>
+            </div>
+
+            <div
+              className={`text-xs px-3 py-2 rounded-lg ${
+                darkMode
+                  ? "bg-gray-800 text-gray-300"
+                  : "bg-gray-100 text-gray-600"
+              }`}
+            >
+              Ctrl + R = Refresh
+            </div>
+          </div>
         </div>
 
-        {/* ===== FILTERS & SEARCH ===== */}
-        <div
-          className={`flex gap-4 mb-6 flex-wrap ${darkMode ? "bg-gray-800" : "bg-white"} p-4 rounded-lg shadow`}
+        {/* FILTERS */}
+
+        <section
+          className={`rounded-2xl p-4 mb-6 shadow-sm ${
+            darkMode
+              ? "bg-gray-900 border border-gray-800"
+              : "bg-white border border-gray-200"
+          }`}
         >
-          <div>
-            <label className="text-sm font-medium">Project</label>
+          <div className="flex flex-col lg:flex-row gap-3">
             <select
-              className={`ml-2 p-2 border rounded ${darkMode ? "bg-gray-700 border-gray-600 text-white" : ""}`}
               value={selectedProject}
-              onChange={(e) => setSelectedProject(e.target.value)}
+              onChange={(event) => setSelectedProject(event.target.value)}
+              className={`rounded-xl border p-3 ${
+                darkMode
+                  ? "bg-gray-800 border-gray-700"
+                  : "bg-white border-gray-300"
+              }`}
             >
               <option value="All">All Projects</option>
-              {projects.map((p) => (
-                <option key={p} value={p}>
-                  {p}
+
+              {projects.map((project) => (
+                <option key={project} value={project}>
+                  {project}
                 </option>
               ))}
             </select>
-          </div>
-          <div>
-            <label className="text-sm font-medium">Date</label>
+
             <select
-              className={`ml-2 p-2 border rounded ${darkMode ? "bg-gray-700 border-gray-600 text-white" : ""}`}
+              value={selectedCategory}
+              onChange={(event) => setSelectedCategory(event.target.value)}
+              className={`rounded-xl border p-3 ${
+                darkMode
+                  ? "bg-gray-800 border-gray-700"
+                  : "bg-white border-gray-300"
+              }`}
+            >
+              <option value="All">All Categories</option>
+
+              {CATEGORIES.map((category) => (
+                <option key={category} value={category}>
+                  {category}
+                </option>
+              ))}
+            </select>
+
+            <select
               value={dateRange}
-              onChange={(e) => setDateRange(e.target.value)}
+              onChange={(event) => setDateRange(event.target.value)}
+              className={`rounded-xl border p-3 ${
+                darkMode
+                  ? "bg-gray-800 border-gray-700"
+                  : "bg-white border-gray-300"
+              }`}
             >
               <option value="today">Today</option>
+
               <option value="week">Last 7 Days</option>
+
               <option value="month">Last 30 Days</option>
+
+              <option value="all">All Time</option>
             </select>
-          </div>
-          <div className="flex-1">
-            <label className="text-sm font-medium">Search</label>
+
             <input
               type="text"
-              placeholder="🔍 Search by app name..."
-              className={`ml-2 p-2 border rounded w-full md:w-64 ${darkMode ? "bg-gray-700 border-gray-600 text-white" : ""}`}
               value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
+              onChange={(event) => setSearchTerm(event.target.value)}
+              placeholder="Search app, title, project..."
+              className={`flex-1 rounded-xl border p-3 outline-none focus:ring-2 focus:ring-blue-500 ${
+                darkMode
+                  ? "bg-gray-800 border-gray-700"
+                  : "bg-white border-gray-300"
+              }`}
             />
-          </div>
-        </div>
 
-        {/* ===== STATS CARDS ===== */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-          <div
-            className={`p-4 rounded-lg shadow ${darkMode ? "bg-gray-800" : "bg-white"}`}
-          >
-            <p className="text-sm opacity-70">⏱️ Total Time</p>
-            <p className="text-2xl font-bold text-blue-500">{totalTime} min</p>
-            <p className="text-xs opacity-60">
-              {Math.round(totalTime / 60)} hrs
-            </p>
+            <button
+              onClick={() => setShowOnlyReview(!showOnlyReview)}
+              className={`rounded-xl px-4 py-3 text-sm font-medium ${
+                showOnlyReview
+                  ? "bg-amber-500 text-white"
+                  : darkMode
+                    ? "bg-gray-800"
+                    : "bg-gray-100"
+              }`}
+            >
+              ⚠️ Review {reviewCount > 0 && `(${reviewCount})`}
+            </button>
           </div>
-          <div
-            className={`p-4 rounded-lg shadow ${darkMode ? "bg-gray-800" : "bg-white"}`}
-          >
-            <p className="text-sm opacity-70">📋 Activities</p>
-            <p className="text-2xl font-bold text-green-500">
-              {filteredActivities.length}
-            </p>
-          </div>
-          <div
-            className={`p-4 rounded-lg shadow ${darkMode ? "bg-gray-800" : "bg-white"}`}
-          >
-            <p className="text-sm opacity-70">📁 Projects</p>
-            <p className="text-2xl font-bold text-purple-500">
-              {projects.length}
-            </p>
-          </div>
-          <div
-            className={`p-4 rounded-lg shadow ${darkMode ? "bg-gray-800" : "bg-white"}`}
-          >
-            <p className="text-sm opacity-70">📊 This Week</p>
-            <p className="text-2xl font-bold text-orange-500">
-              {weeklyStats.total} min
-            </p>
-            <p className="text-xs opacity-60">{weeklyStats.count} activities</p>
-          </div>
-        </div>
+        </section>
 
-        {/* ===== CHARTS ===== */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
-          {/* Bar Chart */}
+        {/* STATS */}
+
+        <section className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
           <div
-            className={`p-4 rounded-lg shadow ${darkMode ? "bg-gray-800" : "bg-white"}`}
+            className={`rounded-2xl p-5 shadow-sm ${
+              darkMode
+                ? "bg-gray-900 border border-gray-800"
+                : "bg-white border border-gray-200"
+            }`}
           >
-            <h3 className="text-lg font-semibold mb-4">📊 Time by Category</h3>
-            {chartData.length > 0 ? (
-              <ResponsiveContainer width="100%" height={250}>
-                <BarChart data={chartData}>
+            <p className="text-sm opacity-60">Total Time</p>
+
+            <p className="text-2xl font-bold text-blue-500 mt-1">
+              {formatDuration(totalTime)}
+            </p>
+
+            <p className="text-xs opacity-50 mt-1">Current filter</p>
+          </div>
+
+          <div
+            className={`rounded-2xl p-5 shadow-sm ${
+              darkMode
+                ? "bg-gray-900 border border-gray-800"
+                : "bg-white border border-gray-200"
+            }`}
+          >
+            <p className="text-sm opacity-60">Activities</p>
+
+            <p className="text-2xl font-bold text-green-500 mt-1">
+              {totalActivities}
+            </p>
+
+            <p className="text-xs opacity-50 mt-1">Detected sessions</p>
+          </div>
+
+          <div
+            className={`rounded-2xl p-5 shadow-sm ${
+              darkMode
+                ? "bg-gray-900 border border-gray-800"
+                : "bg-white border border-gray-200"
+            }`}
+          >
+            <p className="text-sm opacity-60">Projects</p>
+
+            <p className="text-2xl font-bold text-purple-500 mt-1">
+              {projectCount}
+            </p>
+
+            <p className="text-xs opacity-50 mt-1">Associated projects</p>
+          </div>
+
+          <div
+            className={`rounded-2xl p-5 shadow-sm ${
+              darkMode
+                ? "bg-gray-900 border border-gray-800"
+                : "bg-white border border-gray-200"
+            }`}
+          >
+            <p className="text-sm opacity-60">Needs Review</p>
+
+            <p className="text-2xl font-bold text-amber-500 mt-1">
+              {reviewCount}
+            </p>
+
+            <p className="text-xs opacity-50 mt-1">
+              Low confidence / unassigned
+            </p>
+          </div>
+
+          <div
+            className={`rounded-2xl p-5 shadow-sm ${
+              darkMode
+                ? "bg-gray-900 border border-gray-800"
+                : "bg-white border border-gray-200"
+            }`}
+          >
+            <p className="text-sm opacity-60">This Week</p>
+
+            <p className="text-2xl font-bold text-orange-500 mt-1">
+              {formatDuration(weeklyStats.total)}
+            </p>
+
+            <p className="text-xs opacity-50 mt-1">
+              {weeklyStats.count} activities
+            </p>
+          </div>
+        </section>
+
+        {/* ANALYTICS */}
+
+        <section className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+          <div
+            className={`rounded-2xl p-5 ${
+              darkMode
+                ? "bg-gray-900 border border-gray-800"
+                : "bg-white border border-gray-200"
+            }`}
+          >
+            <h2 className="text-lg font-bold mb-4">Time by Category</h2>
+
+            {categoryData.length === 0 ? (
+              <div className="h-64 flex items-center justify-center opacity-50">
+                No category data
+              </div>
+            ) : (
+              <ResponsiveContainer width="100%" height={280}>
+                <BarChart data={categoryData}>
                   <XAxis
                     dataKey="category"
-                    stroke={darkMode ? "#a0aec0" : "#666"}
+                    stroke={darkMode ? "#9ca3af" : "#6b7280"}
                   />
-                  <YAxis stroke={darkMode ? "#a0aec0" : "#666"} />
-                  <Tooltip
-                    contentStyle={{
-                      backgroundColor: darkMode ? "#1a1a2e" : "#fff",
-                      color: darkMode ? "#fff" : "#000",
-                    }}
-                  />
-                  <Bar dataKey="time" fill="#3b82f6" />
+
+                  <YAxis stroke={darkMode ? "#9ca3af" : "#6b7280"} />
+
+                  <Tooltip />
+
+                  <Bar dataKey="time" fill="#3b82f6" radius={[6, 6, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
-            ) : (
-              <p className="text-center opacity-60 py-10">No data to display</p>
             )}
           </div>
 
-          {/* Pie Chart */}
           <div
-            className={`p-4 rounded-lg shadow ${darkMode ? "bg-gray-800" : "bg-white"}`}
+            className={`rounded-2xl p-5 ${
+              darkMode
+                ? "bg-gray-900 border border-gray-800"
+                : "bg-white border border-gray-200"
+            }`}
           >
-            <h3 className="text-lg font-semibold mb-4">
-              🧩 Category Distribution
-            </h3>
-            {pieData.length > 0 ? (
-              <ResponsiveContainer width="100%" height={250}>
+            <h2 className="text-lg font-bold mb-4">Category Distribution</h2>
+
+            {pieData.length === 0 ? (
+              <div className="h-64 flex items-center justify-center opacity-50">
+                No category data
+              </div>
+            ) : (
+              <ResponsiveContainer width="100%" height={280}>
                 <PieChart>
                   <Pie
                     data={pieData}
+                    dataKey="value"
+                    nameKey="name"
                     cx="50%"
                     cy="50%"
-                    labelLine={false}
+                    outerRadius={90}
                     label={({ name, percent }) =>
-                      `${name} ${((percent ?? 0) * 100).toFixed(0)}%`
+                      `${name} ${((percent || 0) * 100).toFixed(0)}%`
                     }
-                    outerRadius={80}
-                    dataKey="value"
                   >
-                    {pieData.map((entry, index) => (
-                      <Cell
-                        key={`cell-${index}`}
-                        fill={COLORS[index % COLORS.length]}
-                      />
+                    {pieData.map((_, index) => (
+                      <Cell key={index} fill={COLORS[index % COLORS.length]} />
                     ))}
                   </Pie>
-                  <Tooltip
-                    contentStyle={{
-                      backgroundColor: darkMode ? "#1a1a2e" : "#fff",
-                      color: darkMode ? "#fff" : "#000",
-                    }}
-                  />
+
+                  <Tooltip />
                 </PieChart>
               </ResponsiveContainer>
-            ) : (
-              <p className="text-center opacity-60 py-10">No data to display</p>
             )}
           </div>
-        </div>
+        </section>
 
-        {/* ===== DAILY TREND CHART ===== */}
-        {dailyData.length > 0 && (
-          <div
-            className={`p-4 rounded-lg shadow mb-6 ${darkMode ? "bg-gray-800" : "bg-white"}`}
+        {/* DAILY TREND */}
+
+        {dailyData.length > 1 && (
+          <section
+            className={`rounded-2xl p-5 mb-6 ${
+              darkMode
+                ? "bg-gray-900 border border-gray-800"
+                : "bg-white border border-gray-200"
+            }`}
           >
-            <h3 className="text-lg font-semibold mb-4">
-              📈 Daily Activity Trend
-            </h3>
-            <ResponsiveContainer width="100%" height={200}>
+            <h2 className="text-lg font-bold mb-4">Daily Activity Trend</h2>
+
+            <ResponsiveContainer width="100%" height={250}>
               <LineChart data={dailyData}>
-                <XAxis dataKey="date" stroke={darkMode ? "#a0aec0" : "#666"} />
-                <YAxis stroke={darkMode ? "#a0aec0" : "#666"} />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: darkMode ? "#1a1a2e" : "#fff",
-                    color: darkMode ? "#fff" : "#000",
-                  }}
+                <XAxis
+                  dataKey="date"
+                  stroke={darkMode ? "#9ca3af" : "#6b7280"}
                 />
+
+                <YAxis stroke={darkMode ? "#9ca3af" : "#6b7280"} />
+
+                <Tooltip />
+
                 <Line
                   type="monotone"
                   dataKey="time"
                   stroke="#3b82f6"
-                  strokeWidth={2}
+                  strokeWidth={3}
+                  dot={{ r: 4 }}
                 />
               </LineChart>
             </ResponsiveContainer>
-          </div>
+          </section>
         )}
 
-        {/* ===== PROJECT ANALYTICS ===== */}
+        {/* PROJECT DISTRIBUTION */}
+
         {projectData.length > 0 && (
-          <div
-            className={`p-4 rounded-lg shadow mb-6 ${darkMode ? "bg-gray-800" : "bg-white"}`}
+          <section
+            className={`rounded-2xl p-5 mb-6 ${
+              darkMode
+                ? "bg-gray-900 border border-gray-800"
+                : "bg-white border border-gray-200"
+            }`}
           >
-            <h3 className="text-lg font-semibold mb-4">
-              📊 Project Time Distribution
-            </h3>
-            <div className="space-y-3">
-              {projectData.map((project, index) => (
-                <div key={project.name}>
-                  <div className="flex justify-between text-sm">
-                    <span>{project.name}</span>
-                    <span>
-                      {project.time} mins (
-                      {Math.round((project.time / totalTime) * 100)}%)
-                    </span>
-                  </div>
-                  <div className="w-full bg-gray-200 rounded-full h-2 dark:bg-gray-700">
+            <h2 className="text-lg font-bold mb-5">
+              Project Time Distribution
+            </h2>
+
+            <div className="space-y-4">
+              {projectData.map((project, index) => {
+                const percentage =
+                  totalTime > 0
+                    ? Math.round((project.time / totalTime) * 100)
+                    : 0;
+
+                return (
+                  <div key={project.name}>
+                    <div className="flex justify-between text-sm mb-2">
+                      <span className="font-medium">{project.name}</span>
+
+                      <span className="opacity-70">
+                        {formatDuration(project.time)} ({percentage}%)
+                      </span>
+                    </div>
+
                     <div
-                      className="h-2 rounded-full"
-                      style={{
-                        width: `${(project.time / totalTime) * 100}%`,
-                        backgroundColor: COLORS[index % COLORS.length],
-                      }}
-                    />
+                      className={`w-full h-2 rounded-full ${
+                        darkMode ? "bg-gray-800" : "bg-gray-200"
+                      }`}
+                    >
+                      <div
+                        className="h-2 rounded-full transition-all"
+                        style={{
+                          width: `${percentage}%`,
+                          backgroundColor: COLORS[index % COLORS.length],
+                        }}
+                      />
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
+            </div>
+          </section>
+        )}
+
+        {/* ACTIVITY FEED */}
+
+        <section
+          className={`rounded-2xl shadow-sm ${
+            darkMode
+              ? "bg-gray-900 border border-gray-800"
+              : "bg-white border border-gray-200"
+          }`}
+        >
+          <div className="p-5 border-b border-gray-200 dark:border-gray-800">
+            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
+              <div>
+                <h2 className="text-xl font-bold">Activity Intelligence</h2>
+
+                <p
+                  className={`text-sm mt-1 ${
+                    darkMode ? "text-gray-400" : "text-gray-500"
+                  }`}
+                >
+                  Automatically captured desktop work
+                </p>
+              </div>
+
+              <div className="text-sm opacity-60">
+                {filteredActivities.length} shown
+              </div>
             </div>
           </div>
-        )}
 
-        {/* ===== ACTIVITY LIST ===== */}
-        <div
-          className={`rounded-lg shadow p-6 ${darkMode ? "bg-gray-800" : "bg-white"}`}
-        >
-          <h2 className="text-xl font-semibold mb-4">📋 Activities</h2>
           {loading ? (
-            <div className="text-center py-10 opacity-60">Loading...</div>
+            <div className="p-12 text-center opacity-60">
+              Loading activities...
+            </div>
           ) : filteredActivities.length === 0 ? (
-            <div className="text-center py-10">
-              <p className="opacity-60">No activities match your filters.</p>
-              <p className="text-sm opacity-40 mt-1">
-                Try changing filters or add sample data
+            <div className="p-12 text-center">
+              <div className="text-4xl mb-3">🖥️</div>
+
+              <h3 className="font-semibold text-lg">No activities found</h3>
+
+              <p className="text-sm opacity-60 mt-2">
+                Start the desktop tracker and use your computer. Detected work
+                will appear here automatically.
               </p>
             </div>
           ) : (
-            <div className="space-y-3">
+            <div className="divide-y divide-gray-200 dark:divide-gray-800">
               {filteredActivities.map((activity) => {
-                const isApproved =
-                  approvedActivities.includes(activity.$id) ||
-                  activity.status === "approved";
+                const review = isReviewRequired(activity);
+
+                const approved =
+                  activity.status === "approved" ||
+                  approvedActivities.includes(activity.$id);
+
+                const confidence = getConfidence(activity);
+
                 return (
                   <div
                     key={activity.$id}
-                    className={`flex items-center justify-between border-b pb-3 hover:bg-gray-50 p-2 rounded ${
-                      darkMode ? "hover:bg-gray-700 border-gray-700" : ""
+                    className={`p-5 transition ${
+                      darkMode ? "hover:bg-gray-800/60" : "hover:bg-gray-50"
                     }`}
                   >
-                    <div className="flex-1">
-                      <p className="font-medium">
-                        {activity.appName || "Unknown"}
-                      </p>
-                      <div className="flex flex-wrap gap-3 text-sm opacity-70">
-                        <span>{activity.duration || 0} mins</span>
-                        <span>•</span>
-                        <span>{classifyActivity(activity.appName)}</span>
-                        {activity.project && (
-                          <>
-                            <span>•</span>
-                            <span className="text-blue-500">
-                              📁 {activity.project}
-                            </span>
-                          </>
+                    <div className="flex flex-col lg:flex-row lg:items-center gap-4">
+                      {/* APP */}
+
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-start gap-3">
+                          <div
+                            className={`w-11 h-11 rounded-xl flex items-center justify-center text-xl flex-shrink-0 ${
+                              darkMode ? "bg-gray-800" : "bg-gray-100"
+                            }`}
+                          >
+                            🖥️
+                          </div>
+
+                          <div className="min-w-0">
+                            <h3 className="font-semibold truncate">
+                              {getAppName(activity)}
+                            </h3>
+
+                            {getWindowTitle(activity) && (
+                              <p
+                                className={`text-sm truncate ${
+                                  darkMode ? "text-gray-400" : "text-gray-500"
+                                }`}
+                              >
+                                {getWindowTitle(activity)}
+                              </p>
+                            )}
+
+                            <div className="flex flex-wrap gap-2 mt-2">
+                              <span className="px-2 py-1 rounded-md text-xs bg-blue-100 text-blue-700 dark:bg-blue-950 dark:text-blue-300">
+                                {getCategory(activity)}
+                              </span>
+
+                              <span className="px-2 py-1 rounded-md text-xs bg-purple-100 text-purple-700 dark:bg-purple-950 dark:text-purple-300">
+                                📁 {getProject(activity)}
+                              </span>
+
+                              <span className="px-2 py-1 rounded-md text-xs bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400">
+                                ⏱️ {formatDuration(getDuration(activity))}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* INTELLIGENCE */}
+
+                      <div className="lg:w-56">
+                        {review ? (
+                          <div className="rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900 p-3">
+                            <p className="text-xs font-semibold text-amber-700 dark:text-amber-400">
+                              ⚠️ Needs review
+                            </p>
+
+                            <p className="text-xs opacity-60 mt-1">
+                              {confidence !== null
+                                ? `Confidence ${confidence}%`
+                                : "Low-confidence classification"}
+                            </p>
+                          </div>
+                        ) : (
+                          <div className="rounded-xl bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-900 p-3">
+                            <p className="text-xs font-semibold text-green-700 dark:text-green-400">
+                              ✓ Automatically classified
+                            </p>
+
+                            {confidence !== null && (
+                              <p className="text-xs opacity-60 mt-1">
+                                Confidence {confidence}%
+                              </p>
+                            )}
+                          </div>
                         )}
-                        <span>•</span>
-                        <span className="text-xs opacity-50">
-                          {new Date(activity.$createdAt).toLocaleDateString()}
-                        </span>
+                      </div>
+
+                      {/* ACTIONS */}
+
+                      <div className="flex flex-wrap gap-2 lg:w-48 lg:justify-end">
+                        <button
+                          onClick={() => openEditor(activity)}
+                          className={`px-3 py-2 rounded-lg text-xs font-medium ${
+                            darkMode
+                              ? "bg-gray-800 hover:bg-gray-700"
+                              : "bg-gray-100 hover:bg-gray-200"
+                          }`}
+                        >
+                          ✏️ Correct
+                        </button>
+
+                        {approved ? (
+                          <span className="px-3 py-2 rounded-lg bg-green-100 text-green-700 dark:bg-green-950 dark:text-green-300 text-xs font-semibold">
+                            ✓ Approved
+                          </span>
+                        ) : (
+                          <button
+                            onClick={() => approveActivity(activity.$id)}
+                            className="px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold"
+                          >
+                            Approve
+                          </button>
+                        )}
                       </div>
                     </div>
-                    {isApproved ? (
-                      <span className="text-green-500 text-sm font-semibold">
-                        ✅ Approved
+
+                    {/* DETAILS */}
+
+                    <div className="mt-4 ml-0 lg:ml-14 flex flex-wrap gap-x-5 gap-y-1 text-xs opacity-50">
+                      <span>
+                        Started:{" "}
+                        {new Date(getActivityDate(activity)).toLocaleString()}
                       </span>
-                    ) : (
-                      <button
-                        onClick={() => approveActivity(activity.$id)}
-                        className="bg-blue-500 text-white px-4 py-1 rounded hover:bg-blue-600 text-sm"
-                      >
-                        Approve ✓
-                      </button>
-                    )}
+
+                      {activity.source && (
+                        <span>Source: {activity.source}</span>
+                      )}
+
+                      {activity.classificationReason && (
+                        <span>
+                          Classification: {activity.classificationReason}
+                        </span>
+                      )}
+
+                      {activity.projectReason && (
+                        <span>Project: {activity.projectReason}</span>
+                      )}
+                    </div>
                   </div>
                 );
               })}
             </div>
           )}
-        </div>
+        </section>
 
-        {/* ===== FOOTER NOTE ===== */}
-        <div
-          className={`mt-6 p-4 rounded-lg ${darkMode ? "bg-gray-800" : "bg-yellow-50"} border ${
-            darkMode ? "border-gray-700" : "border-yellow-200"
+        {/* FOOTER */}
+
+        <footer
+          className={`mt-6 rounded-2xl p-5 text-sm ${
+            darkMode
+              ? "bg-gray-900 border border-gray-800 text-gray-400"
+              : "bg-blue-50 border border-blue-100 text-blue-800"
           }`}
         >
-          <p
-            className={`text-sm ${darkMode ? "text-gray-300" : "text-yellow-800"}`}
-          >
-            💡 <strong>Features:</strong> AI Classification • Charts •
-            PDF/CSV/Excel Export • Dark Mode • Live Timer • Search • Keyboard
-            Shortcuts (Ctrl+A)
-            <br />
-            🚀 <strong>Shortcuts:</strong> Ctrl+A = Add Sample Data • Escape =
-            Clear Search
+          <div className="font-semibold mb-2">🧠 Work Intelligence</div>
+
+          <p>
+            Smart Timesheet captures desktop activity, classifies work,
+            associates it with projects, highlights uncertain decisions, and
+            lets the user correct and approve the generated timesheet.
           </p>
-        </div>
+
+          <p className="mt-2 opacity-70">
+            Dashboard automatically refreshes every 10 seconds.
+          </p>
+        </footer>
       </div>
+
+      {/* =====================================================
+          CORRECTION MODAL
+      ===================================================== */}
+
+      {editingActivity && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/60" onClick={closeEditor} />
+
+          <div
+            className={`relative w-full max-w-lg rounded-2xl shadow-2xl p-6 ${
+              darkMode
+                ? "bg-gray-900 text-white border border-gray-800"
+                : "bg-white text-gray-900"
+            }`}
+          >
+            <div className="flex justify-between items-start mb-6">
+              <div>
+                <h2 className="text-xl font-bold">Correct Activity</h2>
+
+                <p className="text-sm opacity-60 mt-1">
+                  Teach the timesheet the correct project/category.
+                </p>
+              </div>
+
+              <button
+                onClick={closeEditor}
+                className="text-xl opacity-50 hover:opacity-100"
+              >
+                ×
+              </button>
+            </div>
+
+            <div
+              className={`rounded-xl p-4 mb-5 ${
+                darkMode ? "bg-gray-800" : "bg-gray-100"
+              }`}
+            >
+              <p className="font-semibold">{getAppName(editingActivity)}</p>
+
+              {getWindowTitle(editingActivity) && (
+                <p className="text-sm opacity-60 mt-1">
+                  {getWindowTitle(editingActivity)}
+                </p>
+              )}
+
+              <p className="text-xs opacity-50 mt-2">
+                {formatDuration(getDuration(editingActivity))}
+              </p>
+            </div>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium mb-2">
+                  Project
+                </label>
+
+                <select
+                  value={editProject}
+                  onChange={(event) => setEditProject(event.target.value)}
+                  className={`w-full rounded-xl border p-3 ${
+                    darkMode
+                      ? "bg-gray-800 border-gray-700"
+                      : "bg-white border-gray-300"
+                  }`}
+                >
+                  {Array.from(new Set([...PROJECTS, ...projects, editProject]))
+                    .filter(Boolean)
+                    .map((project) => (
+                      <option key={project} value={project}>
+                        {project}
+                      </option>
+                    ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium mb-2">
+                  Category
+                </label>
+
+                <select
+                  value={editCategory}
+                  onChange={(event) => setEditCategory(event.target.value)}
+                  className={`w-full rounded-xl border p-3 ${
+                    darkMode
+                      ? "bg-gray-800 border-gray-700"
+                      : "bg-white border-gray-300"
+                  }`}
+                >
+                  {CATEGORIES.map((category) => (
+                    <option key={category} value={category}>
+                      {category}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="flex gap-3 mt-6">
+              <button
+                onClick={closeEditor}
+                disabled={savingEdit}
+                className={`flex-1 rounded-xl py-3 font-medium ${
+                  darkMode
+                    ? "bg-gray-800 hover:bg-gray-700"
+                    : "bg-gray-100 hover:bg-gray-200"
+                }`}
+              >
+                Cancel
+              </button>
+
+              <button
+                onClick={saveActivityCorrection}
+                disabled={savingEdit}
+                className="flex-1 rounded-xl py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold disabled:opacity-50"
+              >
+                {savingEdit ? "Saving..." : "Save Correction"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

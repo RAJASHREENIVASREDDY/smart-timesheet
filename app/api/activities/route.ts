@@ -38,6 +38,8 @@ type ActivityPayload = {
   projectConfidence?: number;
 
   reasons?: string[];
+  classificationReason?: string;
+  projectReason?: string;
   source?: string;
 
   status?: string;
@@ -69,7 +71,8 @@ type NormalizedActivity = {
   projectId: string;
   projectConfidence: number;
 
-  reasons: string[];
+  classificationReason: string;
+  projectReason: string;
   source: string;
 
   status: string;
@@ -159,11 +162,23 @@ function normalizeActivity(payload: ActivityPayload): NormalizedActivity {
 
   const projectId = payload.projectId?.trim() || "";
 
-  const reasons = Array.isArray(payload.reasons)
-    ? payload.reasons
-        .filter((reason): reason is string => typeof reason === "string")
-        .slice(0, 20)
+  const reasonList = Array.isArray(payload.reasons)
+    ? payload.reasons.filter(
+        (reason): reason is string => typeof reason === "string",
+      )
     : [];
+
+  const classificationReason = (
+    payload.classificationReason?.trim() ||
+    reasonList[0] ||
+    ""
+  ).slice(0, 500);
+
+  const projectReason = (
+    payload.projectReason?.trim() ||
+    reasonList[1] ||
+    ""
+  ).slice(0, 500);
 
   const source = payload.source?.trim() || "desktop-tracker";
 
@@ -185,7 +200,8 @@ function normalizeActivity(payload: ActivityPayload): NormalizedActivity {
     projectId,
     projectConfidence,
 
-    reasons,
+    classificationReason,
+    projectReason,
     source,
 
     status: normalizeStatus(payload.status),
@@ -330,7 +346,7 @@ async function updateDocument(
  * - preserve project
  * - preserve category
  * - preserve confidence
- * - preserve reasons
+ * - preserve classification reason
  * - preserve status
  *
  * But keep updating:
@@ -371,9 +387,10 @@ function mergeWithExisting(
 
       confidence: existing.confidence ?? incoming.confidence,
 
-      reasons: Array.isArray(existing.reasons)
-        ? existing.reasons
-        : incoming.reasons,
+      classificationReason:
+        existing.classificationReason ?? incoming.classificationReason,
+
+      projectReason: existing.projectReason ?? incoming.projectReason,
 
       status: existingStatus,
     };
@@ -382,6 +399,54 @@ function mergeWithExisting(
   return {
     ...incoming,
     status: existingStatus === "pending" ? incoming.status : existingStatus,
+  };
+}
+
+function truncate(value: string, maxLength: number): string {
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  return value.slice(0, maxLength);
+}
+
+/**
+ * Converts a normalized activity into the exact
+ * attribute set of the Appwrite "activities"
+ * collection.
+ *
+ * Appwrite rejects documents containing unknown
+ * attributes, so extra fields (for example
+ * `classification` or `reasons`) must never be
+ * sent. This filter is the reason cloud sync was
+ * failing with "Unknown attribute" errors.
+ *
+ * String values are truncated to the collection's
+ * configured maximum sizes.
+ */
+function toAppwriteData(activity: NormalizedActivity): Record<string, any> {
+  return {
+    application: truncate(activity.application, 255),
+    appName: truncate(activity.appName, 255),
+    windowTitle: truncate(activity.windowTitle, 500),
+
+    startTime: truncate(activity.startTime, 100),
+    endTime: truncate(activity.endTime, 100),
+    duration: activity.duration,
+
+    category: truncate(activity.category, 100),
+    confidence: activity.confidence,
+
+    project: truncate(activity.project, 100),
+    projectName: truncate(activity.projectName, 255),
+    projectId: truncate(activity.projectId, 255),
+    projectConfidence: activity.projectConfidence,
+
+    classificationReason: truncate(activity.classificationReason, 500),
+    projectReason: truncate(activity.projectReason, 500),
+    source: truncate(activity.source, 100),
+
+    status: truncate(activity.status, 50),
   };
 }
 
@@ -464,7 +529,10 @@ export async function POST(request: NextRequest) {
     if (existing) {
       const merged = mergeWithExisting(existing, normalized);
 
-      const updateResponse = await updateDocument(documentId, merged);
+      const updateResponse = await updateDocument(
+        documentId,
+        toAppwriteData(merged),
+      );
 
       if (!updateResponse.ok) {
         const text = await updateResponse.text();
@@ -483,7 +551,9 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({
         success: true,
         action: "updated",
+        updated: true,
         documentId,
+        activityId: documentId,
         activity: updatedDocument,
       });
     }
@@ -491,7 +561,10 @@ export async function POST(request: NextRequest) {
     /**
      * First-time activity.
      */
-    const createResponse = await createDocument(documentId, normalized);
+    const createResponse = await createDocument(
+      documentId,
+      toAppwriteData(normalized),
+    );
 
     if (createResponse.ok) {
       const createdDocument = (await createResponse.json()) as AppwriteDocument;
@@ -500,7 +573,9 @@ export async function POST(request: NextRequest) {
         {
           success: true,
           action: "created",
+          created: true,
           documentId,
+          activityId: documentId,
           activity: createdDocument,
         },
         {
@@ -523,7 +598,10 @@ export async function POST(request: NextRequest) {
         if (raceExisting) {
           const merged = mergeWithExisting(raceExisting, normalized);
 
-          const updateResponse = await updateDocument(documentId, merged);
+          const updateResponse = await updateDocument(
+            documentId,
+            toAppwriteData(merged),
+          );
 
           if (updateResponse.ok) {
             const updatedDocument =
@@ -532,7 +610,9 @@ export async function POST(request: NextRequest) {
             return NextResponse.json({
               success: true,
               action: "updated-after-conflict",
+              updated: true,
               documentId,
+              activityId: documentId,
               activity: updatedDocument,
             });
           }

@@ -1,0 +1,1286 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+    <title>Smart Timesheet Tracker</title>
+
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+
+      :root {
+        --bg: #0b1020;
+        --card: #111827;
+        --card-2: #182235;
+        --border: #26334a;
+        --text: #f8fafc;
+        --muted: #94a3b8;
+        --blue: #3b82f6;
+        --green: #22c55e;
+        --red: #ef4444;
+        --orange: #f59e0b;
+        --purple: #a855f7;
+      }
+
+      body {
+        margin: 0;
+        padding: 28px;
+        font-family: Inter, Arial, Helvetica, sans-serif;
+        background:
+          radial-gradient(circle at top right, #172554 0, transparent 35%),
+          var(--bg);
+        color: var(--text);
+      }
+
+      .container {
+        width: 100%;
+        max-width: 1050px;
+        margin: 0 auto;
+      }
+
+      .card {
+        background: rgba(17, 24, 39, 0.96);
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        padding: 24px;
+        margin-bottom: 20px;
+        box-shadow: 0 15px 40px rgba(0, 0, 0, 0.22);
+      }
+
+      h1,
+      h2,
+      h3 {
+        margin-top: 0;
+      }
+
+      h1 {
+        font-size: 30px;
+        margin-bottom: 5px;
+      }
+
+      h2 {
+        font-size: 21px;
+        margin-bottom: 6px;
+      }
+
+      h3 {
+        font-size: 16px;
+        margin-top: 26px;
+      }
+
+      .subtitle {
+        color: var(--muted);
+        margin-bottom: 22px;
+        line-height: 1.5;
+      }
+
+      /* =================================================
+         STATUS
+         ================================================= */
+
+      .status {
+        display: inline-flex;
+        align-items: center;
+        gap: 9px;
+        padding: 9px 13px;
+        border-radius: 999px;
+        font-size: 14px;
+        font-weight: 700;
+        margin-bottom: 25px;
+        border: 1px solid var(--border);
+        background: var(--card-2);
+      }
+
+      .status.active {
+        color: #86efac;
+        border-color: rgba(34, 197, 94, 0.35);
+        background: rgba(22, 101, 52, 0.18);
+      }
+
+      .status.paused {
+        color: #fca5a5;
+        border-color: rgba(239, 68, 68, 0.35);
+        background: rgba(127, 29, 29, 0.18);
+      }
+
+      /* =================================================
+         CURRENT ACTIVITY
+         ================================================= */
+
+      .current-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 14px;
+      }
+
+      .current-box {
+        background: var(--card-2);
+        border: 1px solid var(--border);
+        border-radius: 13px;
+        padding: 15px;
+        min-width: 0;
+      }
+
+      .label {
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.8px;
+        margin-bottom: 7px;
+      }
+
+      .value {
+        font-size: 16px;
+        font-weight: 700;
+        line-height: 1.45;
+        word-break: break-word;
+      }
+
+      .timer-box {
+        margin-top: 16px;
+        padding: 20px;
+        text-align: center;
+        border-radius: 14px;
+        background: linear-gradient(
+          135deg,
+          rgba(59, 130, 246, 0.16),
+          rgba(168, 85, 247, 0.12)
+        );
+        border: 1px solid rgba(59, 130, 246, 0.3);
+      }
+
+      .timer-label {
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 1px;
+        margin-bottom: 5px;
+      }
+
+      .timer {
+        font-size: 43px;
+        line-height: 1.1;
+        font-weight: 800;
+        letter-spacing: 2px;
+      }
+
+      /* =================================================
+         BUTTONS
+         ================================================= */
+
+      .buttons {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 18px;
+      }
+
+      button {
+        border: none;
+        border-radius: 9px;
+        padding: 11px 17px;
+        cursor: pointer;
+        font-size: 14px;
+        font-weight: 700;
+        color: white;
+        transition:
+          transform 0.15s ease,
+          opacity 0.15s ease;
+      }
+
+      button:hover {
+        opacity: 0.9;
+        transform: translateY(-1px);
+      }
+
+      button:active {
+        transform: translateY(0);
+      }
+
+      #pause {
+        background: #334155;
+      }
+
+      #resume {
+        background: #16a34a;
+      }
+
+      .export-btn {
+        background: var(--blue);
+      }
+
+      .correct-btn {
+        background: var(--blue);
+        margin-top: 8px;
+      }
+
+      /* =================================================
+         STATS
+         ================================================= */
+
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+        margin-top: 20px;
+      }
+
+      .stat-card {
+        background: var(--card-2);
+        border: 1px solid var(--border);
+        border-radius: 13px;
+        padding: 16px;
+      }
+
+      .stat-number {
+        font-size: 25px;
+        font-weight: 800;
+      }
+
+      .stat-label {
+        color: var(--muted);
+        font-size: 12px;
+        margin-top: 4px;
+      }
+
+      /* =================================================
+         TIMESHEET HEADER
+         ================================================= */
+
+      .timesheet-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 20px;
+      }
+
+      /* =================================================
+         FILTER
+         ================================================= */
+
+      .timesheet-filter {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-top: 20px;
+        padding: 13px;
+        background: var(--card-2);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+      }
+
+      .timesheet-filter label {
+        color: var(--muted);
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .timesheet-filter select,
+      .project-select {
+        padding: 9px 11px;
+        border-radius: 8px;
+        border: 1px solid #334155;
+        background: #0f172a;
+        color: var(--text);
+        font-size: 13px;
+        outline: none;
+      }
+
+      /* =================================================
+         TOTAL
+         ================================================= */
+
+      .timesheet-total {
+        margin-top: 18px;
+        padding: 22px;
+        text-align: center;
+        background: linear-gradient(
+          135deg,
+          rgba(59, 130, 246, 0.1),
+          rgba(168, 85, 247, 0.08)
+        );
+        border: 1px solid var(--border);
+        border-radius: 13px;
+      }
+
+      .timesheet-total-number {
+        font-size: 36px;
+        font-weight: 800;
+      }
+
+      /* =================================================
+         BREAKDOWN
+         ================================================= */
+
+      .breakdown-row {
+        padding: 15px 0;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .breakdown-row:last-child {
+        border-bottom: none;
+      }
+
+      .breakdown-top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 15px;
+      }
+
+      .breakdown-name {
+        font-weight: 700;
+      }
+
+      .breakdown-time {
+        color: #cbd5e1;
+        font-size: 13px;
+        white-space: nowrap;
+      }
+
+      .progress-container {
+        height: 7px;
+        margin-top: 9px;
+        background: #263247;
+        border-radius: 999px;
+        overflow: hidden;
+      }
+
+      .progress-bar {
+        height: 100%;
+        background: var(--blue);
+        border-radius: 999px;
+        transition: width 0.4s ease;
+      }
+
+      .breakdown-percentage {
+        margin-top: 6px;
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      /* =================================================
+         ACTIVITY
+         ================================================= */
+
+      .activity {
+        padding: 18px 0;
+        border-bottom: 1px solid var(--border);
+      }
+
+      .activity:last-child {
+        border-bottom: none;
+      }
+
+      .activity-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 15px;
+      }
+
+      .app {
+        font-size: 17px;
+        font-weight: 800;
+      }
+
+      .window {
+        margin-top: 5px;
+        color: #cbd5e1;
+        font-size: 13px;
+        word-break: break-word;
+      }
+
+      .duration {
+        margin-top: 8px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .live-badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        padding: 5px 8px;
+        border-radius: 999px;
+        background: rgba(34, 197, 94, 0.12);
+        border: 1px solid rgba(34, 197, 94, 0.3);
+        color: #86efac;
+        font-size: 10px;
+        font-weight: 800;
+        white-space: nowrap;
+      }
+
+      .category {
+        margin-top: 12px;
+        display: inline-block;
+        padding: 6px 9px;
+        border-radius: 7px;
+        background: rgba(59, 130, 246, 0.15);
+        color: #93c5fd;
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .confidence {
+        margin-top: 8px;
+        color: #86efac;
+        font-size: 12px;
+        font-weight: 600;
+      }
+
+      .reason {
+        margin-top: 5px;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.5;
+      }
+
+      /* =================================================
+         PROJECT
+         ================================================= */
+
+      .project {
+        margin-top: 13px;
+        font-size: 14px;
+      }
+
+      .project-confidence {
+        margin-top: 5px;
+        color: #93c5fd;
+        font-size: 12px;
+      }
+
+      .project-reason {
+        margin-top: 5px;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.5;
+      }
+
+      /* =================================================
+         CORRECTION
+         ================================================= */
+
+      .correction {
+        margin-top: 14px;
+        padding-top: 14px;
+        border-top: 1px solid var(--border);
+      }
+
+      .correction-label {
+        display: block;
+        color: var(--muted);
+        font-size: 12px;
+        font-weight: 700;
+        margin-bottom: 7px;
+      }
+
+      .correction-status {
+        margin-top: 7px;
+        color: #86efac;
+        font-size: 11px;
+        font-weight: 700;
+      }
+
+      /* =================================================
+         EMPTY
+         ================================================= */
+
+      .empty {
+        padding: 20px 0;
+        color: var(--muted);
+        font-size: 13px;
+        text-align: center;
+      }
+
+      /* =================================================
+         FOOTER
+         ================================================= */
+
+      .footer-note {
+        color: #64748b;
+        font-size: 11px;
+        text-align: center;
+        margin-top: 5px;
+      }
+
+      /* =================================================
+         RESPONSIVE
+         ================================================= */
+
+      @media (max-width: 700px) {
+        body {
+          padding: 15px;
+        }
+
+        .current-grid,
+        .stats {
+          grid-template-columns: 1fr;
+        }
+
+        .timesheet-header {
+          flex-direction: column;
+        }
+
+        .export-btn {
+          width: 100%;
+        }
+
+        .timer {
+          font-size: 34px;
+        }
+
+        .activity-header {
+          flex-direction: column;
+        }
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="container">
+      <!-- =================================================
+           CURRENT TRACKING
+           ================================================= -->
+
+      <div class="card">
+        <h1>Smart Timesheet Tracker</h1>
+
+        <div class="subtitle">Automatic desktop activity tracking</div>
+
+        <div id="status" class="status">🔄 Starting tracker...</div>
+
+        <div class="current-grid">
+          <div class="current-box">
+            <div class="label">CURRENT APPLICATION</div>
+
+            <div id="application" class="value">Detecting...</div>
+          </div>
+
+          <div class="current-box">
+            <div class="label">WINDOW</div>
+
+            <div id="window" class="value">Detecting...</div>
+          </div>
+
+          <div class="current-box">
+            <div class="label">SESSION STARTED</div>
+
+            <div id="start" class="value">-</div>
+          </div>
+
+          <div class="current-box">
+            <div class="label">TRACKING INTERVAL</div>
+
+            <div class="value">Every 5 seconds</div>
+          </div>
+        </div>
+
+        <div class="timer-box">
+          <div class="timer-label">CURRENT SESSION</div>
+
+          <div id="timer" class="timer">00:00:00</div>
+        </div>
+
+        <div class="buttons">
+          <button id="pause">⏸ Pause Tracking</button>
+
+          <button id="resume">▶ Resume Tracking</button>
+        </div>
+
+        <div class="stats">
+          <div class="stat-card">
+            <div id="activityCount" class="stat-number">0</div>
+
+            <div class="stat-label">Activities Recorded</div>
+          </div>
+
+          <div class="stat-card">
+            <div id="todayCount" class="stat-number">0</div>
+
+            <div class="stat-label">Today's Activities</div>
+          </div>
+
+          <div class="stat-card">
+            <div id="currentCategory" class="stat-number">-</div>
+
+            <div class="stat-label">Current Category</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- =================================================
+           AUTOMATIC TIMESHEET
+           ================================================= -->
+
+      <div class="card">
+        <div class="timesheet-header">
+          <div>
+            <h2>Automatic Timesheet</h2>
+
+            <div class="subtitle">
+              Your desktop activity is automatically converted into a structured
+              timesheet.
+            </div>
+          </div>
+
+          <button id="exportCsv" class="export-btn">↓ Export CSV</button>
+        </div>
+
+        <div class="timesheet-filter">
+          <label for="timesheetFilter"> View </label>
+
+          <select id="timesheetFilter">
+            <option value="today">Today</option>
+
+            <option value="all">All Time</option>
+          </select>
+        </div>
+
+        <div class="timesheet-total">
+          <div id="totalTime" class="timesheet-total-number">00:00:00</div>
+
+          <div class="stat-label">Total Tracked Time</div>
+        </div>
+
+        <h3>Project Breakdown</h3>
+
+        <div id="projectSummary">
+          <div class="empty">No project activity yet.</div>
+        </div>
+
+        <h3>Activity Breakdown</h3>
+
+        <div id="categorySummary">
+          <div class="empty">No categorized activity yet.</div>
+        </div>
+      </div>
+
+      <!-- =================================================
+           RECENT ACTIVITIES
+           ================================================= -->
+
+      <div class="card">
+        <h2>Recent Activities</h2>
+
+        <div class="subtitle">Automatically detected desktop work</div>
+
+        <div id="activities">
+          <div class="empty">No activities recorded yet.</div>
+        </div>
+      </div>
+
+      <div class="footer-note">
+        Smart Timesheet • Desktop Activity Intelligence
+      </div>
+    </div>
+
+    <script>
+      const { ipcRenderer } = require("electron");
+
+      // =================================================
+      // DOM REFERENCES
+      // =================================================
+
+      const status = document.getElementById("status");
+
+      const application = document.getElementById("application");
+
+      const windowTitle = document.getElementById("window");
+
+      const start = document.getElementById("start");
+
+      const timer = document.getElementById("timer");
+
+      const activitiesContainer = document.getElementById("activities");
+
+      const activityCount = document.getElementById("activityCount");
+
+      const todayCount = document.getElementById("todayCount");
+
+      const currentCategory = document.getElementById("currentCategory");
+
+      const totalTime = document.getElementById("totalTime");
+
+      const projectSummary = document.getElementById("projectSummary");
+
+      const categorySummary = document.getElementById("categorySummary");
+
+      const timesheetFilter = document.getElementById("timesheetFilter");
+
+      const exportCsv = document.getElementById("exportCsv");
+
+      let currentStart = null;
+
+      let currentActivityData = null;
+
+      // =================================================
+      // FORMAT DURATION
+      // =================================================
+
+      function formatDuration(seconds) {
+        seconds = Math.max(0, Number(seconds) || 0);
+
+        const hours = Math.floor(seconds / 3600);
+
+        const minutes = Math.floor((seconds % 3600) / 60);
+
+        const secs = Math.floor(seconds % 60);
+
+        return [hours, minutes, secs]
+          .map((value) => String(value).padStart(2, "0"))
+          .join(":");
+      }
+
+      // =================================================
+      // ESCAPE HTML
+      // =================================================
+
+      function escapeHtml(value) {
+        if (value === null || value === undefined) {
+          return "";
+        }
+
+        return String(value)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;")
+          .replace(/'/g, "&#039;");
+      }
+
+      // =================================================
+      // LIVE TIMER
+      // =================================================
+
+      function updateTimer() {
+        if (currentStart === null) {
+          timer.textContent = "00:00:00";
+
+          return;
+        }
+
+        const seconds = Math.floor((Date.now() - currentStart) / 1000);
+
+        timer.textContent = formatDuration(seconds);
+      }
+
+      setInterval(updateTimer, 1000);
+
+      // =================================================
+      // PAUSE
+      // =================================================
+
+      document.getElementById("pause").addEventListener("click", () => {
+        ipcRenderer.send("pause-tracking");
+      });
+
+      // =================================================
+      // RESUME
+      // =================================================
+
+      document.getElementById("resume").addEventListener("click", () => {
+        ipcRenderer.send("resume-tracking");
+      });
+
+      // =================================================
+      // TODAY COUNT
+      // =================================================
+
+      function isToday(dateValue) {
+        if (!dateValue) {
+          return false;
+        }
+
+        const date = new Date(dateValue);
+
+        const now = new Date();
+
+        return (
+          date.getFullYear() === now.getFullYear() &&
+          date.getMonth() === now.getMonth() &&
+          date.getDate() === now.getDate()
+        );
+      }
+
+      // =================================================
+      // RENDER ACTIVITIES
+      // =================================================
+
+      function renderActivities(activityList) {
+        const list = Array.isArray(activityList) ? activityList : [];
+
+        activityCount.textContent = list.length;
+
+        todayCount.textContent = list.filter((activity) =>
+          isToday(activity.startTime),
+        ).length;
+
+        if (!list.length) {
+          activitiesContainer.innerHTML = `
+            <div class="empty">
+              No activities recorded yet.
+            </div>
+          `;
+
+          return;
+        }
+
+        activitiesContainer.innerHTML = list
+          .map((activity) => {
+            const activityId = escapeHtml(activity.id);
+
+            const app = escapeHtml(
+              activity.application || "Unknown Application",
+            );
+
+            const title = escapeHtml(activity.windowTitle || "Unknown Window");
+
+            const category = escapeHtml(activity.category || "Other");
+
+            const project = escapeHtml(activity.projectName || "Unassigned");
+
+            const reason = escapeHtml(
+              activity.reason || "No classification explanation available.",
+            );
+
+            const projectReason = escapeHtml(
+              activity.projectReason ||
+                "No project association explanation available.",
+            );
+
+            const confidence = Math.round(
+              (Number(activity.confidence) || 0) * 100,
+            );
+
+            const projectConfidence = Math.round(
+              (Number(activity.projectConfidence) || 0) * 100,
+            );
+
+            const duration = Number(activity.duration) || 0;
+
+            const isRunning = !activity.endTime;
+
+            return `
+                  <div
+                    class="activity"
+                    data-activity-id="${activityId}"
+                  >
+
+                    <div class="activity-header">
+
+                      <div>
+                        <div class="app">
+                          ${app}
+                        </div>
+
+                        <div class="window">
+                          ${title}
+                        </div>
+                      </div>
+
+                      ${
+                        isRunning
+                          ? `
+                            <div class="live-badge">
+                              ● LIVE
+                            </div>
+                          `
+                          : ""
+                      }
+
+                    </div>
+
+                    <div class="duration">
+                      Duration:
+                      <strong>
+                        ${formatDuration(duration)}
+                      </strong>
+                    </div>
+
+                    <div class="category">
+                      ${category}
+                    </div>
+
+                    <div class="confidence">
+                      ✓ Activity Confidence:
+                      ${confidence}%
+                    </div>
+
+                    <div class="reason">
+                      ${reason}
+                    </div>
+
+                    <div class="project">
+                      Project:
+                      <strong>
+                        ${project}
+                      </strong>
+                    </div>
+
+                    <div class="project-confidence">
+                      Project Confidence:
+                      ${projectConfidence}%
+                    </div>
+
+                    <div class="project-reason">
+                      ${projectReason}
+                    </div>
+
+                    <div class="correction">
+
+                      <label
+                        class="correction-label"
+                        for="project-${activityId}"
+                      >
+                        Correct Project
+                      </label>
+
+                      <select
+                        id="project-${activityId}"
+                        class="project-select"
+                        data-activity-id="${activityId}"
+                      >
+
+                        <option value="">
+                          Select project
+                        </option>
+
+                        <option value="smart-timesheet">
+                          Smart Timesheet
+                        </option>
+
+                        <option value="travelsync">
+                          TravelSync
+                        </option>
+
+                        <option value="skillsync">
+                          SkillSync
+                        </option>
+
+                        <option value="unassigned">
+                          Unassigned
+                        </option>
+
+                      </select>
+
+                      <br />
+
+                      <button
+                        class="correct-btn"
+                        data-activity-id="${activityId}"
+                      >
+                        Save Correction
+                      </button>
+
+                      <div
+                        class="correction-status"
+                        id="correction-status-${activityId}"
+                      ></div>
+
+                    </div>
+
+                  </div>
+                `;
+          })
+          .join("");
+      }
+
+      // =================================================
+      // RENDER TIMESHEET
+      // =================================================
+
+      function renderTimesheet(timesheet) {
+        if (!timesheet) {
+          totalTime.textContent = "00:00:00";
+
+          projectSummary.innerHTML = `
+            <div class="empty">
+              No project activity yet.
+            </div>
+          `;
+
+          categorySummary.innerHTML = `
+            <div class="empty">
+              No categorized activity yet.
+            </div>
+          `;
+
+          return;
+        }
+
+        // -----------------------------------------------
+        // TOTAL
+        // -----------------------------------------------
+
+        totalTime.textContent = formatDuration(timesheet.totalSeconds);
+
+        // -----------------------------------------------
+        // PROJECT BREAKDOWN
+        // -----------------------------------------------
+
+        if (!timesheet.projects || !timesheet.projects.length) {
+          projectSummary.innerHTML = `
+            <div class="empty">
+              No project activity yet.
+            </div>
+          `;
+        } else {
+          projectSummary.innerHTML = timesheet.projects
+            .map((project) => {
+              const percentage = Math.max(
+                0,
+                Math.min(100, Number(project.percentage) || 0),
+              );
+
+              return `
+                    <div class="breakdown-row">
+
+                      <div class="breakdown-top">
+
+                        <div class="breakdown-name">
+                          ${escapeHtml(project.projectName || "Unassigned")}
+                        </div>
+
+                        <div class="breakdown-time">
+                          ${formatDuration(project.seconds)}
+                        </div>
+
+                      </div>
+
+                      <div class="progress-container">
+
+                        <div
+                          class="progress-bar"
+                          style="width: ${percentage}%"
+                        ></div>
+
+                      </div>
+
+                      <div class="breakdown-percentage">
+                        ${percentage}% of tracked time
+                      </div>
+
+                    </div>
+                  `;
+            })
+            .join("");
+        }
+
+        // -----------------------------------------------
+        // CATEGORY BREAKDOWN
+        // -----------------------------------------------
+
+        if (!timesheet.categories || !timesheet.categories.length) {
+          categorySummary.innerHTML = `
+            <div class="empty">
+              No categorized activity yet.
+            </div>
+          `;
+        } else {
+          categorySummary.innerHTML = timesheet.categories
+            .map((category) => {
+              const percentage = Math.max(
+                0,
+                Math.min(100, Number(category.percentage) || 0),
+              );
+
+              return `
+                    <div class="breakdown-row">
+
+                      <div class="breakdown-top">
+
+                        <div class="breakdown-name">
+                          ${escapeHtml(category.category || "Other")}
+                        </div>
+
+                        <div class="breakdown-time">
+                          ${formatDuration(category.seconds)}
+                        </div>
+
+                      </div>
+
+                      <div class="progress-container">
+
+                        <div
+                          class="progress-bar"
+                          style="width: ${percentage}%"
+                        ></div>
+
+                      </div>
+
+                      <div class="breakdown-percentage">
+                        ${percentage}% of tracked time
+                      </div>
+
+                    </div>
+                  `;
+            })
+            .join("");
+        }
+      }
+
+      // =================================================
+      // FILTER
+      // =================================================
+
+      timesheetFilter.addEventListener("change", (event) => {
+        ipcRenderer.send("change-timesheet-filter", event.target.value);
+      });
+
+      // =================================================
+      // EXPORT
+      // =================================================
+
+      exportCsv.addEventListener("click", () => {
+        ipcRenderer.send("export-timesheet-csv");
+      });
+
+      // =================================================
+      // EXPORT COMPLETE
+      // =================================================
+
+      ipcRenderer.on("export-complete", () => {
+        alert("Timesheet exported successfully!");
+      });
+
+      // =================================================
+      // PROJECT CORRECTION
+      // =================================================
+
+      document.addEventListener("click", (event) => {
+        const button = event.target.closest(".correct-btn");
+
+        if (!button) {
+          return;
+        }
+
+        const activityId = button.dataset.activityId;
+
+        const select = document.querySelector(
+          `.project-select[data-activity-id="${activityId}"]`,
+        );
+
+        if (!select || !select.value) {
+          alert("Please select a project first.");
+
+          return;
+        }
+
+        const projectNames = {
+          "smart-timesheet": "Smart Timesheet",
+
+          travelsync: "TravelSync",
+
+          skillsync: "SkillSync",
+
+          unassigned: "Unassigned",
+        };
+
+        const projectName = projectNames[select.value] || "Unassigned";
+
+        ipcRenderer.send("correct-project", {
+          activityId,
+
+          projectId: select.value === "unassigned" ? null : select.value,
+
+          projectName,
+        });
+
+        const statusElement = document.getElementById(
+          `correction-status-${activityId}`,
+        );
+
+        if (statusElement) {
+          statusElement.textContent = "✓ Correction saved and learned";
+        }
+      });
+
+      // =================================================
+      // TRACKER STATE
+      // =================================================
+
+      ipcRenderer.on("tracker-state", (event, state) => {
+        if (!state) {
+          return;
+        }
+
+        // ---------------------------------------------
+        // CURRENT ACTIVITY
+        // ---------------------------------------------
+
+        currentActivityData = state.currentActivity || null;
+
+        if (state.currentActivity) {
+          application.textContent =
+            state.currentActivity.application || "Unknown Application";
+
+          windowTitle.textContent =
+            state.currentActivity.windowTitle || "Unknown Window";
+
+          currentStart = new Date(state.currentActivity.startTime).getTime();
+
+          if (!Number.isNaN(currentStart)) {
+            start.textContent = new Date(currentStart).toLocaleTimeString();
+          } else {
+            start.textContent = "-";
+          }
+
+          currentCategory.textContent =
+            state.currentActivity.category || "Other";
+
+          updateTimer();
+        } else {
+          application.textContent = "Detecting...";
+
+          windowTitle.textContent = "Detecting...";
+
+          start.textContent = "-";
+
+          currentStart = null;
+
+          currentCategory.textContent = "-";
+
+          timer.textContent = "00:00:00";
+        }
+
+        // ---------------------------------------------
+        // STATUS
+        // ---------------------------------------------
+
+        if (state.tracking) {
+          status.textContent = "● TRACKING ACTIVE";
+
+          status.className = "status active";
+        } else {
+          status.textContent = "● TRACKING PAUSED";
+
+          status.className = "status paused";
+        }
+
+        // ---------------------------------------------
+        // ACTIVITIES
+        // ---------------------------------------------
+
+        renderActivities(state.activities || []);
+
+        // ---------------------------------------------
+        // TIMESHEET
+        // ---------------------------------------------
+
+        renderTimesheet(state.timesheet || null);
+      });
+
+      // =================================================
+      // INITIAL REQUEST
+      // =================================================
+
+      ipcRenderer.send("get-state");
+    </script>
+  </body>
+</html>
