@@ -14,9 +14,14 @@ const POLL_INTERVAL = 5000;
 const LIVE_SYNC_INTERVAL = 10000;
 const CLOUD_RETRY_INTERVAL = 60000;
 
+const PRODUCTION_API_URL =
+  "https://smart-timesheet-ashen.vercel.app/api/activities";
+
+const LOCAL_API_URL = "http://localhost:3000/api/activities";
+
 const API_URL =
   process.env.SMART_TIMESHEET_API_URL ||
-  "http://localhost:3000/api/activities";
+  (app.isPackaged ? PRODUCTION_API_URL : LOCAL_API_URL);
 
 const DESKTOP_TRACKER_API_KEY =
   process.env.SMART_TIMESHEET_TRACKER_KEY ||
