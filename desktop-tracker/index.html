@@ -108,6 +108,64 @@
       }
 
       /* =================================================
+         STATUS ROW + CLOUD SYNC INDICATOR
+         ================================================= */
+
+      .status-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 25px;
+      }
+
+      .status-row .status {
+        margin-bottom: 0;
+      }
+
+      .sync-status {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        padding: 9px 13px;
+        border-radius: 999px;
+        font-size: 13px;
+        font-weight: 700;
+        border: 1px solid var(--border);
+        background: var(--card-2);
+        color: var(--muted);
+        white-space: nowrap;
+      }
+
+      .sync-status.sync-idle {
+        color: var(--muted);
+      }
+
+      .sync-status.sync-syncing {
+        color: #93c5fd;
+        border-color: rgba(59, 130, 246, 0.4);
+        background: rgba(59, 130, 246, 0.12);
+      }
+
+      .sync-status.sync-synced {
+        color: #86efac;
+        border-color: rgba(34, 197, 94, 0.35);
+        background: rgba(22, 101, 52, 0.18);
+      }
+
+      .sync-status.sync-retrying {
+        color: #fcd34d;
+        border-color: rgba(245, 158, 11, 0.4);
+        background: rgba(245, 158, 11, 0.12);
+      }
+
+      .sync-status.sync-error {
+        color: #fca5a5;
+        border-color: rgba(239, 68, 68, 0.4);
+        background: rgba(127, 29, 29, 0.2);
+      }
+
+      /* =================================================
          CURRENT ACTIVITY
          ================================================= */
 
@@ -553,7 +611,17 @@
 
         <div class="subtitle">Automatic desktop activity tracking</div>
 
-        <div id="status" class="status">🔄 Starting tracker...</div>
+        <div class="status-row">
+          <div id="status" class="status">🔄 Starting tracker...</div>
+
+          <div
+            id="syncStatus"
+            class="sync-status sync-idle"
+            title="Cloud synchronization status"
+          >
+            Waiting for sync
+          </div>
+        </div>
 
         <div class="current-grid">
           <div class="current-box">
@@ -689,6 +757,8 @@
 
       const status = document.getElementById("status");
 
+      const syncStatus = document.getElementById("syncStatus");
+
       const application = document.getElementById("application");
 
       const windowTitle = document.getElementById("window");
@@ -789,23 +859,53 @@
       });
 
       // =================================================
-      // TODAY COUNT
+      // CLOUD SYNC STATUS
       // =================================================
+      //
+      // Mirrors the cloudSyncStatus object sent by the
+      // main process over tracker-state. Every state
+      // shown here originates from a real sync event.
 
-      function isToday(dateValue) {
-        if (!dateValue) {
-          return false;
+      function renderSyncStatus(sync) {
+        if (!syncStatus) {
+          return;
         }
 
-        const date = new Date(dateValue);
+        const info =
+          sync && typeof sync === "object"
+            ? sync
+            : { status: "idle", pending: 0, lastSyncAt: null };
 
-        const now = new Date();
+        const pending = Math.max(0, Number(info.pending) || 0);
 
-        return (
-          date.getFullYear() === now.getFullYear() &&
-          date.getMonth() === now.getMonth() &&
-          date.getDate() === now.getDate()
-        );
+        let label = "Waiting for sync";
+        let className = "sync-status sync-idle";
+
+        if (info.status === "syncing") {
+          label = "Syncing…";
+          className = "sync-status sync-syncing";
+        } else if (info.status === "synced") {
+          if (info.lastSyncAt) {
+            const time = new Date(info.lastSyncAt);
+
+            label = Number.isNaN(time.getTime())
+              ? "Synced"
+              : `Synced · ${time.toLocaleTimeString()}`;
+          } else {
+            label = "Synced";
+          }
+
+          className = "sync-status sync-synced";
+        } else if (info.status === "retrying") {
+          label = `Offline / retrying · ${pending} pending`;
+          className = "sync-status sync-retrying";
+        } else if (info.status === "error") {
+          label = "Sync error";
+          className = "sync-status sync-error";
+        }
+
+        syncStatus.textContent = label;
+        syncStatus.className = className;
       }
 
       // =================================================
@@ -817,9 +917,10 @@
 
         activityCount.textContent = list.length;
 
-        todayCount.textContent = list.filter((activity) =>
-          isToday(activity.startTime),
-        ).length;
+        // NOTE: Today's count is NOT derived from this
+        // displayed list. The main process sends the
+        // true today total (state.todayCount) computed
+        // from the full local history.
 
         if (!list.length) {
           activitiesContainer.innerHTML = `
@@ -1268,6 +1369,16 @@
         // ---------------------------------------------
 
         renderActivities(state.activities || []);
+
+        if (typeof state.todayCount === "number") {
+          todayCount.textContent = state.todayCount;
+        }
+
+        // ---------------------------------------------
+        // CLOUD SYNC STATUS
+        // ---------------------------------------------
+
+        renderSyncStatus(state.cloudSyncStatus);
 
         // ---------------------------------------------
         // TIMESHEET

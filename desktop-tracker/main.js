@@ -4,7 +4,7 @@ const path = require("path");
 const fs = require("fs");
 const { execFile } = require("child_process");
 
-const { generateTimesheet } = require("./timesheet");
+const { generateTimesheet, isSameDay } = require("./timesheet");
 
 // =====================================================
 // CONFIGURATION
@@ -48,6 +48,65 @@ let detectionInProgress = false;
 
 // Prevent duplicate cloud requests for the same activity.
 const syncingActivities = new Set();
+
+// =====================================================
+// CLOUD SYNC STATUS (SHARED WITH RENDERER)
+// =====================================================
+//
+// Single source of truth for the desktop UI sync
+// indicator. Updated ONLY from real sync events:
+// - "syncing" when an upload attempt begins
+// - "synced" after a real successful upload
+// - "retrying" when an upload failed but unsynced
+//   activities remain queued for retry
+// - "error" when an upload failed with nothing
+//   left to retry
+// - "idle" before the first sync attempt
+//
+let cloudSyncStatus = {
+  status: "idle",
+
+  pending: 0,
+
+  lastSyncAt: null,
+
+  message: "Waiting for first sync",
+};
+
+// =====================================================
+// COUNT UNSYNCED ACTIVITIES
+// =====================================================
+//
+// Uses the exact same completed-and-unsynced rule
+// as the retry loop below, so the indicator's
+// pending count always matches retry behavior.
+//
+function countUnsyncedActivities() {
+  return activities.filter(
+    (activity) =>
+      activity && activity.endTime && activity.cloudSynced !== true,
+  ).length;
+}
+
+// =====================================================
+// UPDATE CLOUD SYNC STATUS
+// =====================================================
+
+function setCloudSyncStatus(status, message, updateTimestamp = false) {
+  cloudSyncStatus = {
+    status,
+
+    pending: countUnsyncedActivities(),
+
+    lastSyncAt: updateTimestamp
+      ? new Date().toISOString()
+      : cloudSyncStatus.lastSyncAt,
+
+    message: message || "",
+  };
+
+  sendState();
+}
 
 // =====================================================
 // FILE STORAGE
@@ -897,6 +956,8 @@ async function syncActivityToCloud(activity, options = {}) {
 
   syncingActivities.add(activity.id);
 
+  setCloudSyncStatus("syncing", `Uploading ${activity.application}`);
+
   try {
     let endTime = activity.endTime;
 
@@ -920,6 +981,12 @@ async function syncActivityToCloud(activity, options = {}) {
       },
 
       body: JSON.stringify(payload),
+
+      // Prevent a hung request from blocking retries
+      // for this activity indefinitely. A timeout
+      // surfaces as a normal sync failure and the
+      // existing retry loop picks the activity up.
+      signal: AbortSignal.timeout(20000),
     });
 
     const responseText = await response.text();
@@ -963,11 +1030,22 @@ async function syncActivityToCloud(activity, options = {}) {
 
     console.log(`[Cloud Sync] Success: ${activity.application}`);
 
+    setCloudSyncStatus("synced", `Synced ${activity.application}`, true);
+
     return true;
   } catch (error) {
     console.error(
       `[Cloud Sync] Failed for ${activity.application}:`,
       error?.message || error,
+    );
+
+    const failedPending = countUnsyncedActivities();
+
+    setCloudSyncStatus(
+      failedPending > 0 ? "retrying" : "error",
+      failedPending > 0
+        ? `Sync failed - ${failedPending} pending`
+        : error?.message || "Sync failed",
     );
 
     return false;
@@ -1017,6 +1095,28 @@ async function syncUnsyncedActivities() {
   console.log(
     `[Cloud Sync] ${unsynced.length} unsynced completed activity(s) found.`,
   );
+
+  // Refresh the indicator's pending count from the
+  // same list the retry loop acts on. If no sync has
+  // run yet, pending work means we are effectively
+  // in a retry-waiting state rather than idle.
+  cloudSyncStatus = {
+    status:
+      cloudSyncStatus.status === "idle" && unsynced.length > 0
+        ? "retrying"
+        : cloudSyncStatus.status,
+
+    pending: unsynced.length,
+
+    lastSyncAt: cloudSyncStatus.lastSyncAt,
+
+    message:
+      cloudSyncStatus.status === "idle" && unsynced.length > 0
+        ? `${unsynced.length} unsynced - retrying`
+        : cloudSyncStatus.message,
+  };
+
+  sendState();
 
   const batch = unsynced.slice(-10);
 
@@ -1151,12 +1251,26 @@ function sendState() {
 
   const timesheet = generateTimesheet(activities, timesheetFilter);
 
+  // Today count is calculated from the FULL local
+  // activity history, not from the last-20 slice
+  // sent to the renderer below.
+  const today = new Date();
+
+  const todayCount = activities.filter(
+    (activity) =>
+      activity && activity.startTime && isSameDay(activity.startTime, today),
+  ).length;
+
   mainWindow.webContents.send("tracker-state", {
     tracking,
 
     currentActivity,
 
     activities: activities.slice(-20).reverse(),
+
+    todayCount,
+
+    cloudSyncStatus: { ...cloudSyncStatus },
 
     timesheet,
   });
